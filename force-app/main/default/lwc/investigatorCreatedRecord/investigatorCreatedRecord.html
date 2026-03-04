@@ -1,0 +1,47 @@
+<template>
+  <template lwc:if={hasRecord}>
+    <div class="created-card">
+      <!-- Header bar -->
+      <div class="card-header">
+        <div class="header-left">
+          <div class="icon-ring">
+            <lightning-icon icon-name={iconName} size="x-small" class="record-icon"></lightning-icon>
+          </div>
+          <span class="header-title">Record Created</span>
+        </div>
+        <span class="created-badge">
+          <lightning-icon icon-name="utility:check" size="xx-small" class="check-icon"></lightning-icon>
+          Success
+        </span>
+      </div>
+
+      <!-- Record info -->
+      <div class="card-body">
+        <div class="record-identity">
+          <a href="#" class="record-name" onclick={handleOpenRecord}>{recordName}</a>
+          <span class="object-label">{objectLabel}</span>
+        </div>
+
+        <!-- Fields grid -->
+        <template lwc:if={hasFields}>
+          <div class="fields-grid">
+            <template for:each={fields} for:item="field">
+              <div key={field.key} class="field-item">
+                <span class="field-label">{field.label}</span>
+                <span class="field-value">{field.value}</span>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      <!-- Footer -->
+      <div class="card-footer">
+        <a href="#" class="open-link" onclick={handleOpenRecord}>
+          Open in Salesforce
+          <lightning-icon icon-name="utility:new_window" size="xx-small" class="open-link-icon"></lightning-icon>
+        </a>
+      </div>
+    </div>
+  </template>
+</template>

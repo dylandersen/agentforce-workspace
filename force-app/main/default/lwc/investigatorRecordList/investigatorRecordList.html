@@ -1,0 +1,136 @@
+<template>
+  <!-- Skeleton Loading -->
+  <template lwc:if={showSkeleton}>
+    <div class="record-list-container skeleton-container">
+      <div class="record-list-header">
+        <div class="header-left">
+          <lightning-icon icon-name="utility:table" size="x-small" class="header-icon"></lightning-icon>
+          <span class="header-title">Related Records</span>
+        </div>
+      </div>
+
+      <!-- Skeleton Tab Bar -->
+      <div class="tab-bar skeleton-tab-bar">
+        <div class="skeleton-tab"></div>
+        <div class="skeleton-tab skeleton-tab-short"></div>
+        <div class="skeleton-tab"></div>
+      </div>
+
+      <!-- Skeleton Table -->
+      <div class="table-wrapper">
+        <table class="record-table">
+          <thead>
+            <tr>
+              <th class="th-cell"><div class="skeleton-bar skeleton-bar-header"></div></th>
+              <th class="th-cell"><div class="skeleton-bar skeleton-bar-header skeleton-bar-short"></div></th>
+              <th class="th-cell"><div class="skeleton-bar skeleton-bar-header"></div></th>
+              <th class="th-cell"><div class="skeleton-bar skeleton-bar-header skeleton-bar-short"></div></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="skeleton-row"><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td></tr>
+            <tr class="skeleton-row"><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td></tr>
+            <tr class="skeleton-row"><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td></tr>
+            <tr class="skeleton-row"><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td></tr>
+            <tr class="skeleton-row"><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td><td class="td-cell"><div class="skeleton-bar"></div></td><td class="td-cell"><div class="skeleton-bar skeleton-bar-short"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </template>
+
+  <!-- Real Content -->
+  <template lwc:if={hasTabs}>
+    <div class="record-list-container">
+      <!-- Header -->
+      <div class="record-list-header">
+        <div class="header-left">
+          <lightning-icon icon-name="utility:table" size="x-small" class="header-icon"></lightning-icon>
+          <span class="header-title">Related Records</span>
+        </div>
+      </div>
+
+      <!-- Tab Bar -->
+      <div class="tab-bar">
+        <template for:each={tabs} for:item="tab">
+          <button
+            key={tab.objectApiName}
+            class={tab.tabClass}
+            data-index={tab.index}
+            onclick={handleTabClick}
+          >
+            <lightning-icon icon-name={tab.iconName} size="xx-small" class="tab-icon"></lightning-icon>
+            <span class="tab-label">{tab.tabLabel}</span>
+          </button>
+        </template>
+      </div>
+
+      <!-- Table -->
+      <template lwc:if={activeTab}>
+        <div class="table-wrapper">
+          <table class="record-table" style={activeTab.tableStyle}>
+            <thead>
+              <tr>
+                <template for:each={activeTab.columns} for:item="col">
+                  <th key={col.fieldName} class={col.headerClass} style={col.widthStyle}>
+                    <div class="th-content" data-field={col.fieldName} onclick={handleSort}>
+                      <span class="th-label">{col.label}</span>
+                      <template lwc:if={col.isSorted}>
+                        <svg class="sort-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                          <template lwc:if={col.isSortedAsc}>
+                            <path d="M8 3.5v9M4.5 7L8 3.5 11.5 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                          </template>
+                          <template lwc:if={col.isSortedDesc}>
+                            <path d="M8 12.5v-9M11.5 9L8 12.5 4.5 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                          </template>
+                        </svg>
+                      </template>
+                    </div>
+                    <div class="resize-handle" data-field={col.fieldName} onmousedown={handleResizeStart}></div>
+                  </th>
+                </template>
+              </tr>
+            </thead>
+            <tbody>
+              <template for:each={activeTab.rows} for:item="row">
+                <tr key={row.id} class="table-row">
+                  <template for:each={row.cells} for:item="cell">
+                    <td key={cell.key} class={cell.cellClass}>
+                      <template lwc:if={cell.isLink}>
+                        <a
+                          href={cell.recordUrl}
+                          class="record-link"
+                          data-record-id={cell.recordId}
+                          data-object-name={cell.objectApiName}
+                          onclick={handleRecordNav}
+                        >
+                          {cell.value}
+                        </a>
+                      </template>
+                      <template lwc:if={cell.isPlain}>
+                        <span class={cell.valueClass}>{cell.value}</span>
+                      </template>
+                    </td>
+                  </template>
+                </tr>
+              </template>
+              <template lwc:if={activeTab.hasMore}>
+                <tr class="view-more-row" onclick={handleViewMore}>
+                  <td colspan={activeTab.columnCount} class="view-more-cell">
+                    {activeTab.viewMoreLabel}
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <template lwc:if={activeTab.limitReached}>
+          <div class="limit-banner">
+            <lightning-icon icon-name="utility:info" size="xx-small" class="limit-icon"></lightning-icon>
+            <span>{activeTab.limitMessage}</span>
+          </div>
+        </template>
+      </template>
+    </div>
+  </template>
+</template>
