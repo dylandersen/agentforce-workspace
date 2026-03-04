@@ -24,33 +24,30 @@ Agentforce Workspace lets users ask business questions in plain English inside S
 Agentforce Workspace uses a **two-stage AI pipeline** powered by the Salesforce Models API:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  User asks a question in natural language                           │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 1: buildQueries                                              │
-│  ┌────────────┐    ┌─────────┐    ┌──────────────┐    ┌──────────┐ │
-│  │ NL question │ →  │   LLM   │ →  │ SOQL queries │ →  │ Execute  │ │
-│  │ + schema    │    │         │    │              │    │ as user  │ │
-│  └────────────┘    └─────────┘    └──────────────┘    └──────────┘ │
-│                                          ▲                         │
-│                         error feedback ──┘  (auto-retry on failure) │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 2: analyzeResults                                            │
-│  ┌──────────────┐    ┌─────────┐    ┌──────────────────────────┐   │
-│  │ Query results │ →  │   LLM   │ →  │ HTML analysis with       │   │
-│  │ + history     │    │         │    │ record links + follow-up │   │
-│  └──────────────┘    └─────────┘    └──────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+User question (natural language)
+         |
+         v
+  +-----------------+        +-------+        +--------------+        +---------+
+  | NL question     |  --->  |  LLM  |  --->  | SOQL queries |  --->  | Execute |
+  | + schema context|        |       |        |              |        | as user |
+  +-----------------+        +-------+        +--------------+        +---------+
+                                                     ^                     |
+                                                     |    error feedback   |
+                                                     +---------------------+
+                                                       (auto-retry on failure)
+         |
+         v
+  +-----------------+        +-------+        +----------------------------+
+  | Query results   |  --->  |  LLM  |  --->  | HTML analysis with         |
+  | + chat history  |        |       |        | record links + follow-ups  |
+  +-----------------+        +-------+        +----------------------------+
 ```
 
-**Key behaviors:**
-- Failed SOQL queries are automatically retried — the error message is fed back to the LLM so it can self-correct
-- All queries run as the current user, respecting sharing rules and FLS
-- 26 objects supported out of the box: 13 core CRM objects + 13 ITSM/service objects + any custom objects
+**Stage 1 — `buildQueries`:** Translates the user's question + org schema into SOQL, executes as the running user. Failed queries are automatically retried with the error fed back to the LLM for self-correction.
+
+**Stage 2 — `analyzeResults`:** Sends query results + conversation history to the LLM, which returns formatted analysis with clickable record links and suggested follow-up questions.
+
+All queries run as the current user, respecting sharing rules and field-level security. 26 objects supported out of the box (13 CRM + 13 ITSM/service), plus any custom objects.
 
 ## Component Map
 
