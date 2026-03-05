@@ -65,6 +65,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   @track pendingRecordTabs = null;
   @track isChatLoading = false;
   @track createdRecord = null;
+  @track mapAddresses = [];
 
   inputValue = "";
   isLoading = false;
@@ -175,6 +176,10 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
   get showRecordList() {
     return (this.hasRecordTabs || this.isChatLoading) && !this.createdRecord;
+  }
+
+  get showMapPanel() {
+    return this.mapAddresses && this.mapAddresses.length > 0 && !this.createdRecord;
   }
 
   get hasCreatedRecord() {
@@ -442,6 +447,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this.pendingRecordTabs = null;
     this.isChatLoading = false;
     this.createdRecord = null;
+    this.mapAddresses = [];
     this.inputValue = "";
     this._clearInput();
     this.isLoading = false;
@@ -493,6 +499,10 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         this._cachedRecordTabs = newRecordTabs;
         this._applyRecordTabs(newRecordTabs, false);
       }
+
+      // Extract addresses for map panel
+      const addrs = this._extractAccountAddresses(newRecordTabs);
+      this.mapAddresses = addrs;
 
       // Show intermediate status
       const summary = queryResult?.querySummary ?? "";
@@ -822,6 +832,30 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
       }
     }
     return rows;
+  }
+
+  // ─── Address Extraction (Map Panel) ─────────────────
+
+  _extractAccountAddresses(recordTabs) {
+    const addresses = [];
+    if (!recordTabs) return addresses;
+    for (const tab of recordTabs) {
+      for (const row of tab.rows || []) {
+        const city = row.BillingCity || row.City;
+        const state = row.BillingState || row.BillingStateCode || row.State;
+        if (city && state) {
+          addresses.push({
+            street: row.BillingStreet || row.Street || "",
+            city,
+            state,
+            postalCode: row.BillingPostalCode || row.PostalCode || "",
+            title: row.Name || "Account",
+            description: row.Industry || row.Type || ""
+          });
+        }
+      }
+    }
+    return addresses;
   }
 
   // ─── Markdown Normalizer ──────────────────────────────

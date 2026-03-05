@@ -1,0 +1,38 @@
+<template>
+  <template lwc:if={hasAddresses}>
+    <div class="map-card">
+      <!-- Header -->
+      <div class="map-header">
+        <div class="map-header-left">
+          <div class="icon-ring">
+            <lightning-icon icon-name="utility:location" size="xx-small" class="map-icon"></lightning-icon>
+          </div>
+          <h3 class="map-title">Advisor Locations</h3>
+          <span class="count-badge">{markerCount}</span>
+        </div>
+      </div>
+
+      <!-- Map -->
+      <div class="map-container">
+        <lightning-map
+          map-markers={mapMarkers}
+          zoom-level={zoomLevel}
+          list-view="hidden"
+        ></lightning-map>
+      </div>
+
+      <!-- Footer -->
+      <div class="map-footer">
+        <a href={routeUrl} target="_blank" rel="noopener noreferrer" class="route-link">
+          <svg class="route-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Open Route in Google Maps</span>
+          <svg class="external-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M6 3h7v7M13 3L6 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </a>
+      </div>
+    </div>
+  </template>
+</template>
