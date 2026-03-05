@@ -290,6 +290,13 @@
           </div>
         </template>
 
+        <!-- Map View -->
+        <template lwc:if={showMapPanel}>
+          <div class="map-panel-row">
+            <c-investigator-map-view addresses={mapAddresses}></c-investigator-map-view>
+          </div>
+        </template>
+
         <!-- Record List View -->
         <template lwc:if={showRecordList}>
           <div class="record-list-row">
