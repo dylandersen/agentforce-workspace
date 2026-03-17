@@ -43,14 +43,13 @@
           <!-- Centered input box -->
           <div class="landing-input-box">
             <div class="landing-input-area">
-              <input
-                type="text"
+              <textarea
                 class="landing-input"
                 placeholder="How can I help you today?"
-                value={landingInputValue}
                 oninput={handleLandingInput}
                 onkeydown={handleLandingKeyDown}
-              />
+                rows="1"
+              >{landingInputValue}</textarea>
             </div>
             <div class="landing-controls-row">
               <div class="landing-controls-left">
@@ -124,14 +123,12 @@
     </div>
   </template>
 
-  <!-- ═══ Active State — Inline Chat + Records ═══ -->
+  <!-- ═══ Active State — Cowork Workspace ═══ -->
   <template lwc:if={isActive}>
     <div class={activeSectionClass}>
       <div class="app-container">
-
-        <!-- Inline Chat -->
         <div class="chat-strip-row">
-          <div class="chat-container">
+          <div class="chat-container chat-container-workspace">
             <!-- Chat Header -->
             <div class="chat-header">
               <div class="header-left-group">
@@ -151,158 +148,390 @@
                   <lightning-icon icon-name="utility:refresh" size="xx-small" class="reset-icon"></lightning-icon>
                   <span class="reset-label">Clear Chat</span>
                 </button>
-                <div class="header-status">
-                  <span class="status-dot"></span>
-                  <span class="status-label">Online</span>
-                </div>
+                <button class="header-icon-btn" onclick={handleToggleDetailsPanel} title="Toggle details panel">
+                  <lightning-icon icon-name="utility:side_list" size="xx-small" class="header-icon-btn-icon"></lightning-icon>
+                </button>
               </div>
             </div>
 
-            <!-- Messages Area -->
-            <div class="messages-area" onclick={handleRecordClick}>
-              <template for:each={messages} for:item="msg">
-                <div key={msg.id} class={msg.rowClass}>
-                  <template lwc:if={msg.isAgent}>
-                    <div class="agent-row">
-                      <div class="agent-avatar">
-                        <img src={agentIcon} alt="" class="avatar-icon" />
-                      </div>
-                      <div class="bubble-wrapper">
-                        <div class="agent-bubble">
-                          <lightning-formatted-rich-text value={msg.content}></lightning-formatted-rich-text>
+            <!-- Body: split workspace -->
+            <div class={chatBodyClass}>
+              <!-- Chat Pane (left side) -->
+              <div class="chat-pane">
+                <!-- Messages Area -->
+                <div class="messages-area" onclick={handleRecordClick}>
+                  <template for:each={messages} for:item="msg">
+                    <div key={msg.id} class={msg.rowClass}>
+                      <template lwc:if={msg.isAgent}>
+                        <div class="agent-row">
+                          <div class="agent-avatar">
+                            <img src={agentIcon} alt="" class="avatar-icon" />
+                          </div>
+                          <div class="bubble-wrapper">
+                            <div class="agent-bubble">
+                              <lightning-formatted-rich-text value={msg.content}></lightning-formatted-rich-text>
+                            </div>
+                            <span class="msg-time">{msg.timestamp}</span>
+                          </div>
                         </div>
-                        <span class="msg-time">{msg.timestamp}</span>
-                      </div>
-                    </div>
-                  </template>
-                  <template lwc:if={msg.isUser}>
-                    <div class="user-row">
-                      <div class="bubble-wrapper">
-                        <div class="user-bubble">{msg.content}</div>
-                        <span class="msg-time msg-time-right">{msg.timestamp}</span>
-                      </div>
-                      <template lwc:if={userPhotoUrl}>
-                        <div class="user-avatar">
-                          <img src={userPhotoUrl} alt="" class="avatar-icon" />
+                      </template>
+                      <template lwc:elseif={msg.isUser}>
+                        <div class="user-row">
+                          <div class="bubble-wrapper">
+                            <div class="user-bubble">{msg.content}</div>
+                            <span class="msg-time msg-time-right">{msg.timestamp}</span>
+                          </div>
+                          <template lwc:if={userPhotoUrl}>
+                            <div class="user-avatar">
+                              <img src={userPhotoUrl} alt="" class="avatar-icon" />
+                            </div>
+                          </template>
                         </div>
                       </template>
                     </div>
                   </template>
-                </div>
-              </template>
 
-              <!-- Intermediate Status -->
-              <template lwc:if={showIntermediateStatus}>
-                <div class="agent-row intermediate-row">
-                  <div class="agent-avatar">
-                    <img src={agentIcon} alt="" class="avatar-icon" />
-                  </div>
-                  <div class="intermediate-status">
-                    <span class="intermediate-text">{intermediateStatus}</span>
-                  </div>
-                </div>
-              </template>
-
-              <!-- Typing Indicator -->
-              <template lwc:if={isLoading}>
-                <div class="agent-row typing-row">
-                  <template lwc:if={showIntermediateStatus}>
-                    <div class="agent-avatar-spacer"></div>
-                  </template>
-                  <template lwc:if={showTypingAvatar}>
-                    <div class="agent-avatar">
-                      <img src={agentIcon} alt="" class="avatar-icon avatar-thinking" />
+                  <!-- Typing Indicator (bouncing dots) -->
+                  <template lwc:if={showTypingIndicator}>
+                    <div class="agent-row typing-row">
+                      <div class="agent-avatar">
+                        <img src={agentIcon} alt="" class="avatar-icon avatar-thinking" />
+                      </div>
+                      <div class="typing-indicator">
+                        <span class="typing-dot"></span>
+                        <span class="typing-dot"></span>
+                        <span class="typing-dot"></span>
+                      </div>
                     </div>
                   </template>
-                  <div class="typing-indicator">
-                    <span class="loading-text">{loadingText}...</span>
+
+                  <!-- Suggested Replies -->
+                  <template lwc:if={showSuggestedReplies}>
+                    <div class="suggested-replies-row">
+                      <span class="suggested-replies-label">Suggested replies</span>
+                      <div class="suggested-replies-chips">
+                        <template for:each={suggestedReplies} for:item="sr">
+                          <button key={sr} class="suggested-reply-chip" data-question={sr} onclick={handleChatSuggestion}>{sr}</button>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- Input Bar -->
+                <div class="input-bar">
+                  <div class="input-bar-row">
+                    <div class="model-picker-wrap">
+                      <button class={modelBtnClass} onclick={handleModelPickerToggle} title="Switch AI model">
+                        <img src={selectedModelLogo} alt="" class={selectedModelLogoClass} aria-hidden="true" />
+                      </button>
+                      <template lwc:if={isModelPickerOpen}>
+                        <div class="model-picker-backdrop" onclick={handleModelPickerClose}></div>
+                        <div class="model-picker-popover">
+                          <div class="model-picker-header">Choose Model</div>
+                          <template for:each={modelOptions} for:item="m">
+                            <button key={m.id} class={m.itemClass} data-model-id={m.id} onclick={handleModelSelect}>
+                              <span class="model-item-check">
+                                <template lwc:if={m.isActive}>
+                                  <svg viewBox="0 0 16 16" fill="none" class="check-icon" aria-hidden="true">
+                                    <path d="M3 8l3.5 3.5L13 4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                                  </svg>
+                                </template>
+                              </span>
+                              <img src={m.logo} alt="" class={m.logoClass} aria-hidden="true" />
+                              <span class="model-item-label">{m.label}</span>
+                              <template lwc:if={m.premium}>
+                                <span class="model-premium-badge">$</span>
+                              </template>
+                            </button>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+                    <div class="input-wrapper">
+                      <textarea
+                        class="chat-input"
+                        placeholder="Ask Agentforce anything about your Salesforce data..."
+                        oninput={handleInput}
+                        onkeydown={handleKeyDown}
+                        rows="1"
+                      >{inputValue}</textarea>
+                      <button class={sendButtonClass} onclick={handleSend} disabled={sendDisabled} title="Send message">
+                        <svg class="send-icon" viewBox="0 0 24 24" fill="none">
+                          <path d="M5.25 12h13.5M12 5.25l6.75 6.75L12 18.75" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </template>
+              </div>
 
-              <!-- Suggested Replies -->
-              <template lwc:if={showSuggestedReplies}>
-                <div class="suggested-replies-row">
-                  <span class="suggested-replies-label">Suggested replies</span>
-                  <div class="suggested-replies-chips">
-                    <template for:each={suggestedReplies} for:item="sr">
-                      <button key={sr} class="suggested-reply-chip" data-question={sr} onclick={handleChatSuggestion}>{sr}</button>
+              <!-- Details Panel (right side) -->
+              <template lwc:if={showDetailsPanel}>
+                <div class="details-pane">
+                  <div class="details-header">
+                    <span class="details-title">Details</span>
+                    <div class="details-header-actions">
+                      <button class="details-action-btn" onclick={handleToggleAllSections} title={toggleAllSectionsTitle}>
+                        <template lwc:if={allSectionsExpanded}>
+                          <svg viewBox="0 0 16 16" fill="none" class="details-action-icon">
+                            <path d="M4 10l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            <line x1="3" y1="13" x2="13" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                          </svg>
+                        </template>
+                        <template lwc:else>
+                          <svg viewBox="0 0 16 16" fill="none" class="details-action-icon">
+                            <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            <line x1="3" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                          </svg>
+                        </template>
+                      </button>
+                      <button class="details-action-btn" onclick={handleCloseDetailsPanel} title="Close panel">
+                        <svg viewBox="0 0 16 16" fill="none" class="details-action-icon">
+                          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Progress Section (always open by default) -->
+                  <div class="sidebar-section collapsible-section">
+                    <div class="collapsible-header" onclick={handleToggleProgress} role="button" tabindex="0">
+                      <span class="sidebar-section-title">Progress</span>
+                      <div class="collapsible-header-right">
+                        <template lwc:if={hasSteps}>
+                          <span class={progressBadgeClass}>{progressPercent}%</span>
+                        </template>
+                        <svg viewBox="0 0 16 16" fill="none" class={progressChevronClass} aria-hidden="true">
+                          <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </div>
+                    </div>
+                    <template lwc:if={isProgressExpanded}>
+                      <div class="collapsible-body">
+                        <template lwc:if={hasSteps}>
+                          <div class="steps-list">
+                            <template for:each={agentSteps} for:item="step">
+                              <div key={step.id} class={step.statusClass}>
+                                <template lwc:if={step.isComplete}>
+                                  <svg viewBox="0 0 16 16" fill="none" class="step-icon step-icon-complete">
+                                    <circle cx="8" cy="8" r="7" fill="#17B0A4"/>
+                                    <path d="M5 8l2 2 4-4" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                  </svg>
+                                </template>
+                                <template lwc:elseif={step.isInProgress}>
+                                  <div class="step-icon step-icon-progress"></div>
+                                </template>
+                                <template lwc:else>
+                                  <svg viewBox="0 0 16 16" fill="none" class="step-icon step-icon-pending">
+                                    <circle cx="8" cy="8" r="7" stroke="#d1d1d1" stroke-width="1.5" fill="none"/>
+                                  </svg>
+                                </template>
+                                <span class="step-label">{step.label}</span>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                        <template lwc:if={showStepsPlaceholder}>
+                          <p class="steps-placeholder">Ask a question to see Agentforce in action.</p>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+
+                  <!-- Related Records Section (collapsed by default, red badge when data arrives) -->
+                  <div class="sidebar-section collapsible-section">
+                    <div class="collapsible-header" onclick={handleToggleRecords} role="button" tabindex="0">
+                      <span class="sidebar-section-title">Related Records</span>
+                      <div class="collapsible-header-right">
+                        <template lwc:if={showRecordsBadge}>
+                          <span class="notify-badge"></span>
+                        </template>
+                        <svg viewBox="0 0 16 16" fill="none" class={recordsChevronClass} aria-hidden="true">
+                          <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </div>
+                    </div>
+                    <template lwc:if={isRecordsExpanded}>
+                      <div class="collapsible-body">
+                        <template lwc:if={hasRecordTabs}>
+                          <div class="sidebar-records-wrap">
+                            <c-investigator-record-list record-tabs={sidebarRecordTabs} onexpandrecords={handleOpenRecordsModal}></c-investigator-record-list>
+                          </div>
+                        </template>
+                        <template lwc:if={noRecordTabs}>
+                          <p class="steps-placeholder">Records will appear here after querying.</p>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+
+                  <!-- Created Record Section -->
+                  <template lwc:if={hasSidebarCreatedRecord}>
+                    <div class="sidebar-section collapsible-section">
+                      <div class="collapsible-header" onclick={handleToggleCreatedRecord} role="button" tabindex="0">
+                        <span class="sidebar-section-title">Created Record</span>
+                        <div class="collapsible-header-right">
+                          <template lwc:if={showCreatedRecordBadge}>
+                            <span class="notify-badge"></span>
+                          </template>
+                          <svg viewBox="0 0 16 16" fill="none" class={createdRecordChevronClass} aria-hidden="true">
+                            <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                        </div>
+                      </div>
+                      <template lwc:if={isCreatedRecordExpanded}>
+                        <div class="collapsible-body">
+                          <c-investigator-created-record created-record={sidebarCreatedRecord} onviewrecord={handleViewRecord}></c-investigator-created-record>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+
+                  <!-- Visualization Section (collapsed by default, red badge when chart arrives) -->
+                  <div class="sidebar-section collapsible-section">
+                    <div class="collapsible-header" onclick={handleToggleChart} role="button" tabindex="0">
+                      <span class="sidebar-section-title">Visualization</span>
+                      <div class="collapsible-header-right">
+                        <template lwc:if={showChartBadge}>
+                          <span class="notify-badge"></span>
+                        </template>
+                        <svg viewBox="0 0 16 16" fill="none" class={chartChevronClass} aria-hidden="true">
+                          <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </div>
+                    </div>
+                    <template lwc:if={isChartExpanded}>
+                      <div class="collapsible-body">
+                        <template lwc:if={hasSidebarChart}>
+                          <div class="sidebar-chart-wrap">
+                            <c-investigator-chart chart-data={sidebarChartData}></c-investigator-chart>
+                          </div>
+                        </template>
+                        <template lwc:if={noSidebarChart}>
+                          <p class="steps-placeholder">Visualizations will appear here when available.</p>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+
+                  <!-- Usage Estimate Section (collapsible) -->
+                  <div class="sidebar-section collapsible-section usage-section">
+                    <div class="collapsible-header" onclick={handleToggleUsage} role="button" tabindex="0">
+                      <div class="usage-header-left">
+                        <span class="sidebar-section-title">Usage Estimate</span>
+                        <lightning-helptext
+                          content="Token estimate is approximate context size sent per message. Flex Credits are cumulative for this session. Each prompt is metered in 2,000-token chunks (rounded up). Credit cost per chunk depends on model tier: Basic models (Gemini Flash, Nemotron Nano) = 2 credits/chunk. Standard models (GPT-5, Gemini Pro, Sonnet 4.5) = 4 credits/chunk. Advanced models (Opus 4.5) = 16 credits/chunk. Clearing the conversation resets the counter."
+                          class="usage-helptext"
+                        ></lightning-helptext>
+                      </div>
+                      <svg viewBox="0 0 16 16" fill="none" class={usageChevronClass} aria-hidden="true">
+                        <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </div>
+                    <template lwc:if={isUsageExpanded}>
+                      <div class="collapsible-body">
+                        <div class="usage-row">
+                          <span class="usage-label">Context size</span>
+                          <span class="usage-value">{formattedContextTokens} tokens</span>
+                        </div>
+                        <template lwc:if={contextTokens}>
+                          <div class="token-meter">
+                            <div class={tokenMeterFillClass} style={tokenMeterWidth}></div>
+                          </div>
+                        </template>
+                        <div class="usage-row">
+                          <span class="usage-label">Session tokens</span>
+                          <span class="usage-value">{formattedSessionTokens}</span>
+                        </div>
+                        <div class="usage-row">
+                          <span class="usage-label">Flex Credits used</span>
+                          <span class="usage-value usage-credits">{formattedSessionCredits}</span>
+                        </div>
+                      </div>
                     </template>
                   </div>
                 </div>
               </template>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
-            <!-- Input Bar -->
-            <div class="input-bar">
-              <div class="input-bar-row">
-                <div class="model-picker-wrap">
-                  <button class={modelBtnClass} onclick={handleModelPickerToggle} title="Switch AI model">
-                    <img src={selectedModelLogo} alt="" class={selectedModelLogoClass} aria-hidden="true" />
-                  </button>
-                  <template lwc:if={isModelPickerOpen}>
-                    <div class="model-picker-backdrop" onclick={handleModelPickerClose}></div>
-                    <div class="model-picker-popover">
-                      <div class="model-picker-header">Choose Model</div>
-                      <template for:each={modelOptions} for:item="m">
-                        <button key={m.id} class={m.itemClass} data-model-id={m.id} onclick={handleModelSelect}>
-                          <span class="model-item-check">
-                            <template lwc:if={m.isActive}>
-                              <svg viewBox="0 0 16 16" fill="none" class="check-icon" aria-hidden="true">
-                                <path d="M3 8l3.5 3.5L13 4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-                              </svg>
-                            </template>
-                          </span>
-                          <img src={m.logo} alt="" class={m.logoClass} aria-hidden="true" />
-                          <span class="model-item-label">{m.label}</span>
-                          <template lwc:if={m.premium}>
-                            <span class="model-premium-badge">$</span>
-                          </template>
-                        </button>
-                      </template>
+    <!-- Records Expanded Modal -->
+    <template lwc:if={isRecordsModalOpen}>
+      <div class="modal-backdrop" onclick={handleCloseRecordsModal}></div>
+      <div class="modal-container">
+        <div class="modal-header">
+          <span class="modal-title">Related Records</span>
+          <button class="details-action-btn" onclick={handleCloseRecordsModal} title="Close">
+            <svg viewBox="0 0 16 16" fill="none" class="details-action-icon">
+              <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <c-investigator-record-list record-tabs={sidebarRecordTabs}></c-investigator-record-list>
+        </div>
+      </div>
+    </template>
+
+    <!-- Record Detail Modal -->
+    <template lwc:if={isRecordViewModalOpen}>
+      <div class="modal-backdrop" onclick={handleCloseRecordViewModal}></div>
+      <div class="modal-container record-view-modal" onviewrecord={handleViewRecord}>
+        <div class="modal-header">
+          <span class="modal-title">{recordViewModalTitle}</span>
+          <div class="details-header-actions">
+            <button class="details-action-btn" onclick={handleNavigateToRecord} title="Open full page">
+              <svg viewBox="0 0 16 16" fill="none" class="details-action-icon">
+                <path d="M9 2h5v5M7 14H2V9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M14 2L9 7M2 14l5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button class="details-action-btn" onclick={handleCloseRecordViewModal} title="Close">
+              <svg viewBox="0 0 16 16" fill="none" class="details-action-icon">
+                <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="modal-body">
+          <template lwc:if={recordViewSupportsUiApi}>
+            <lightning-record-form
+              record-id={recordViewModalRecordId}
+              object-api-name={recordViewModalObjectApiName}
+              mode="readonly"
+              columns="2"
+              density="comfy"
+            ></lightning-record-form>
+          </template>
+          <template lwc:if={recordViewIsActivity}>
+            <div class="activity-detail-view">
+              <div class="activity-detail-header">
+                <div class="activity-detail-icon-ring">
+                  <lightning-icon icon-name={recordViewIconName} size="small" class="activity-detail-icon"></lightning-icon>
+                </div>
+                <div class="activity-detail-title-wrap">
+                  <h2 class="activity-detail-name">{recordViewRecordName}</h2>
+                  <span class="activity-detail-type">{recordViewModalObjectApiName}</span>
+                </div>
+              </div>
+              <template lwc:if={recordViewFields}>
+                <div class="activity-detail-fields">
+                  <template for:each={recordViewFields} for:item="field">
+                    <div key={field.key} class="activity-detail-field">
+                      <span class="activity-detail-label">{field.label}</span>
+                      <span class="activity-detail-value">{field.value}</span>
                     </div>
                   </template>
                 </div>
-                <div class="input-wrapper">
-                  <input
-                    type="text"
-                    class="chat-input"
-                    placeholder="Ask about your pipeline, accounts, campaigns..."
-                    value={inputValue}
-                    oninput={handleInput}
-                    onkeydown={handleKeyDown}
-                  />
-                  <button class={sendButtonClass} onclick={handleSend} disabled={sendDisabled} title="Send message">
-                    <svg class="send-icon" viewBox="0 0 24 24" fill="none">
-                      <path d="M5.25 12h13.5M12 5.25l6.75 6.75L12 18.75" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  </button>
-                </div>
-              </div>
+              </template>
             </div>
-          </div>
+          </template>
         </div>
-
-        <!-- Created Record Card -->
-        <template lwc:if={hasCreatedRecord}>
-          <div class="created-record-row">
-            <c-investigator-created-record created-record={createdRecord}></c-investigator-created-record>
-          </div>
-        </template>
-
-        <!-- Record List View -->
-        <template lwc:if={showRecordList}>
-          <div class="record-list-row">
-            <template lwc:if={hasPendingUpdate}>
-              <div class="refresh-chip" onclick={handleRefreshRecords}>
-                <lightning-icon icon-name="utility:refresh" size="xx-small" class="refresh-chip-icon"></lightning-icon>
-                <span>Click to refresh with latest results</span>
-              </div>
-            </template>
-            <c-investigator-record-list record-tabs={recordTabs} loading={isChatLoading}></c-investigator-record-list>
-          </div>
-        </template>
       </div>
-    </div>
+    </template>
   </template>
 </template>

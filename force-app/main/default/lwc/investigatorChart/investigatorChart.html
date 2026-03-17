@@ -1,0 +1,91 @@
+<template>
+  <template lwc:if={hasData}>
+    <div class="chart-container">
+      <!-- Header -->
+      <div class="chart-header">
+        <div class="chart-header-left">
+          <lightning-icon icon-name="utility:chart" size="xx-small" class="chart-header-icon"></lightning-icon>
+          <h3 class="chart-title">{chartData.title}</h3>
+        </div>
+        <span class="chart-type-badge">{chartTypeBadge}</span>
+      </div>
+
+      <!-- Bar Chart -->
+      <template lwc:if={isBarChart}>
+        <div class="bar-chart">
+          <div class="bar-y-axis">
+            <template for:each={yAxisLabels} for:item="label">
+              <div key={label.key} class="bar-y-line" style={label.style}>
+                <span class="bar-y-label">{label.text}</span>
+              </div>
+            </template>
+          </div>
+          <div class="bar-area">
+            <template for:each={processedItems} for:item="item">
+              <div key={item.key} class="bar-col">
+                <div class="bar-fill" style={item.barStyle}>
+                  <div class="bar-tooltip-wrap">
+                    <span class="bar-tooltip-value">{item.formattedValue}</span>
+                    <span class="bar-tooltip-label">{item.label}</span>
+                  </div>
+                </div>
+                <span class="bar-x-label" title={item.label}>{item.shortLabel}</span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- Horizontal Bar Chart -->
+      <template lwc:if={isHorizontalBar}>
+        <div class="hbar-chart">
+          <template for:each={processedItems} for:item="item">
+            <div key={item.key} class="hbar-row">
+              <span class="hbar-label" title={item.label}>{item.shortLabelH}</span>
+              <div class="hbar-track">
+                <div class="hbar-fill" style={item.hbarStyle}>
+                  <span class="hbar-value">{item.formattedValue}</span>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- Donut Chart -->
+      <template lwc:if={isDonutChart}>
+        <div class="donut-layout">
+          <div class="donut-svg-wrap">
+            <svg viewBox="0 0 100 100" class="donut-svg">
+              <template for:each={donutSegments} for:item="seg">
+                <circle key={seg.key}
+                  class="donut-segment"
+                  cx="50" cy="50" r="35"
+                  stroke={seg.color}
+                  stroke-dasharray={seg.dashArray}
+                  stroke-dashoffset={seg.dashOffset}
+                  fill="none"
+                  stroke-width="14"
+                ></circle>
+              </template>
+            </svg>
+            <div class="donut-center">
+              <span class="donut-total">{donutTotal}</span>
+              <span class="donut-total-label">{chartData.valueLabel}</span>
+            </div>
+          </div>
+          <div class="donut-legend">
+            <template for:each={processedItems} for:item="item">
+              <div key={item.key} class="donut-legend-row">
+                <span class="donut-swatch" style={item.swatchStyle}></span>
+                <span class="donut-legend-label">{item.label}</span>
+                <span class="donut-legend-value">{item.formattedValue}</span>
+                <span class="donut-legend-pct">{item.pctLabel}</span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </template>
+</template>
