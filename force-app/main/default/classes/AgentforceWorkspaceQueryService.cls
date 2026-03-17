@@ -56,8 +56,8 @@ public with sharing class AgentforceWorkspaceQueryService {
     // Default fields for supplementary detail queries when only aggregates were returned
     public static final Map<String, String> DEFAULT_LIST_FIELDS = new Map<String, String>{
         'Opportunity' => 'Id, Name, Account.Name, StageName, Amount, CloseDate',
-        'Account' => 'Id, Name, Industry, Type, Phone',
-        'Contact' => 'Id, Name, Account.Name, Email, Phone, Title',
+        'Account' => 'Id, Name, Industry, Type, Phone, BillingCity, BillingState, BillingStreet, BillingPostalCode',
+        'Contact' => 'Id, Name, Account.Name, Email, Phone, Title, MailingCity, MailingState, MailingStreet, MailingPostalCode',
         'Case' => 'Id, CaseNumber, Subject, Status, Priority, CreatedDate',
         'Lead' => 'Id, Name, Company, Status, Email, CreatedDate',
         'Campaign' => 'Id, Name, Status, Type, StartDate',
@@ -401,6 +401,12 @@ public with sharing class AgentforceWorkspaceQueryService {
                 }
             }
 
+            // Address fields: include in row data for map panel but hide from table columns
+            Set<String> addressFields = new Set<String>{
+                'BillingStreet', 'BillingCity', 'BillingState', 'BillingPostalCode',
+                'MailingStreet', 'MailingCity', 'MailingState', 'MailingPostalCode'
+            };
+
             // Build ordered field list — name field first, then remaining sorted
             List<String> orderedFields = new List<String>();
             if (allFieldNames.contains(nameField)) {
@@ -411,8 +417,9 @@ public with sharing class AgentforceWorkspaceQueryService {
             remaining.sort();
             orderedFields.addAll(remaining);
 
-            // Build column definitions
+            // Build column definitions (exclude address fields from visible columns)
             for (String fn : orderedFields) {
+                if (addressFields.contains(fn)) continue;
                 AgentforceWorkspaceModels.ColumnDef col = new AgentforceWorkspaceModels.ColumnDef();
                 col.fieldName = fn;
                 col.isNameField = (fn == nameField);

@@ -86,6 +86,9 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   @track sidebarCreatedRecord = null;
   @track isCreatedRecordExpanded = false;
   @track _createdRecordBadgeVisible = false;
+  @track mapAddresses = [];
+  @track isMapExpanded = false;
+  @track _mapBadgeVisible = false;
 
   // ─── Usage Estimate State ──────────────────────────
   @track sessionTokens = 0;
@@ -227,12 +230,20 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     return this.sidebarChartData && this.sidebarChartData.items && this.sidebarChartData.items.length > 0;
   }
 
+  get hasMapAddresses() {
+    return this.mapAddresses && this.mapAddresses.length > 0;
+  }
+
   get noRecordTabs() {
     return !this.hasRecordTabs;
   }
 
   get noSidebarChart() {
     return !this.hasSidebarChart;
+  }
+
+  get noMapAddresses() {
+    return !this.hasMapAddresses;
   }
 
   // ─── Collapsible Section Getters ─────────────────────
@@ -249,6 +260,10 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     return "collapsible-chevron" + (this.isChartExpanded ? " collapsible-chevron-expanded" : "");
   }
 
+  get mapChevronClass() {
+    return "collapsible-chevron" + (this.isMapExpanded ? " collapsible-chevron-expanded" : "");
+  }
+
   get showRecordsBadge() {
     return this._recordsBadgeVisible && !this.isRecordsExpanded;
   }
@@ -263,6 +278,10 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
   get showCreatedRecordBadge() {
     return this._createdRecordBadgeVisible && !this.isCreatedRecordExpanded;
+  }
+
+  get showMapBadge() {
+    return this._mapBadgeVisible && !this.isMapExpanded;
   }
 
   get createdRecordChevronClass() {
@@ -304,7 +323,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   }
 
   get allSectionsExpanded() {
-    return this.isProgressExpanded && this.isRecordsExpanded && this.isChartExpanded && this.isUsageExpanded;
+    return this.isProgressExpanded && this.isRecordsExpanded && this.isChartExpanded && this.isMapExpanded && this.isUsageExpanded;
   }
 
   get toggleAllSectionsTitle() {
@@ -540,6 +559,13 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     }
   }
 
+  handleToggleMap() {
+    this.isMapExpanded = !this.isMapExpanded;
+    if (this.isMapExpanded) {
+      this._mapBadgeVisible = false;
+    }
+  }
+
   handleToggleUsage() {
     this.isUsageExpanded = !this.isUsageExpanded;
   }
@@ -549,12 +575,14 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this.isProgressExpanded = expand;
     this.isRecordsExpanded = expand;
     this.isChartExpanded = expand;
+    this.isMapExpanded = expand;
     this.isCreatedRecordExpanded = expand;
     this.isUsageExpanded = expand;
     if (expand) {
       this._recordsBadgeVisible = false;
       this._chartBadgeVisible = false;
       this._createdRecordBadgeVisible = false;
+      this._mapBadgeVisible = false;
     }
   }
 
@@ -752,9 +780,12 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this.isRecordsExpanded = false;
     this.isChartExpanded = false;
     this.isCreatedRecordExpanded = false;
+    this.mapAddresses = [];
+    this.isMapExpanded = false;
     this._recordsBadgeVisible = false;
     this._chartBadgeVisible = false;
     this._createdRecordBadgeVisible = false;
+    this._mapBadgeVisible = false;
     this.inputValue = "";
     this._clearInput();
     this.isLoading = false;
@@ -866,6 +897,12 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         this.sidebarRecordTabs = newRecordTabs;
         if (!this.isRecordsExpanded) {
           this._recordsBadgeVisible = true;
+        }
+        // Extract addresses for map panel
+        const addrs = this._extractAddresses(newRecordTabs);
+        this.mapAddresses = addrs;
+        if (addrs.length > 0 && !this.isMapExpanded) {
+          this._mapBadgeVisible = true;
         }
         this._scrollToBottom();
       } else {
@@ -1137,6 +1174,48 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
       }
     }
     return false;
+  }
+
+  // ─── Address Extraction (Map Panel) ─────────────────
+
+  _extractAddresses(recordTabs) {
+    const addresses = [];
+    if (!recordTabs) return addresses;
+    for (const tab of recordTabs) {
+      const objType = tab.objectApiName;
+      for (const row of tab.rows || []) {
+        if (objType === "Account") {
+          const city = row.BillingCity;
+          const state = row.BillingState;
+          if (city && state) {
+            addresses.push({
+              street: row.BillingStreet || "",
+              city,
+              state,
+              postalCode: row.BillingPostalCode || "",
+              title: row.Name || "Account",
+              description: row.Industry || row.Type || "",
+              type: "Account"
+            });
+          }
+        } else if (objType === "Contact") {
+          const city = row.MailingCity;
+          const state = row.MailingState;
+          if (city && state) {
+            addresses.push({
+              street: row.MailingStreet || "",
+              city,
+              state,
+              postalCode: row.MailingPostalCode || "",
+              title: row.Name || "Contact",
+              description: row.Title || row.Email || "",
+              type: "Contact"
+            });
+          }
+        }
+      }
+    }
+    return addresses;
   }
 
   // ─── Markdown Normalizer ──────────────────────────────
