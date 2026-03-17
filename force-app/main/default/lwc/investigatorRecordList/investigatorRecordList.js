@@ -118,8 +118,8 @@ export default class InvestigatorRecordList extends NavigationMixin(
       };
     });
 
-    // Detect if the SOQL 200-record limit was hit and there are more on the server
-    const limitReached = tab.totalCount && tab.totalCount > tab.recordCount;
+    // Only show "refine your question" when we hit the 200-record cap (not for small discrepancies from dedup/supplementary logic)
+    const limitReached = tab.totalCount && tab.totalCount > 200 && tab.totalCount > tab.recordCount;
     const limitMessage = limitReached
       ? `Showing ${tab.recordCount} of ${tab.totalCount} total. Refine your question to narrow results.`
       : null;
@@ -281,6 +281,10 @@ export default class InvestigatorRecordList extends NavigationMixin(
       ...this._visibleCounts,
       [tab.objectApiName]: current + PAGE_SIZE
     };
+  }
+
+  handleExpandClick() {
+    this.dispatchEvent(new CustomEvent('expandrecords'));
   }
 
   handleRecordNav(event) {

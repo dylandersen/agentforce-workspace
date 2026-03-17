@@ -5,14 +5,31 @@ import GEMINI_LOGO from "@salesforce/resourceUrl/Gemini";
 import OPENAI_LOGO from "@salesforce/resourceUrl/OpenAI";
 import CLAUDE_LOGO from "@salesforce/resourceUrl/Claude";
 import NVIDIA_LOGO from "@salesforce/resourceUrl/nvidia";
-import buildQueries from "@salesforce/apex/AgentforceInvestigatorController.buildQueries";
-import analyzeResults from "@salesforce/apex/AgentforceInvestigatorController.analyzeResults";
-import getUserFirstName from "@salesforce/apex/AgentforceInvestigatorController.getUserFirstName";
-import getUserPhotoUrl from "@salesforce/apex/AgentforceInvestigatorController.getUserPhotoUrl";
+import buildQueries from "@salesforce/apex/AgentforceWorkspaceController.buildQueries";
+import analyzeResults from "@salesforce/apex/AgentforceWorkspaceController.analyzeResults";
+import getUserFirstName from "@salesforce/apex/AgentforceWorkspaceController.getUserFirstName";
+import getUserPhotoUrl from "@salesforce/apex/AgentforceWorkspaceController.getUserPhotoUrl";
 
 const CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
 
 const MAX_HISTORY_TURNS = 10;
+
+const PROMPT_OVERHEAD_TOKENS = 800;
+const USAGE_KEY = "agentforceWorkspace_usage";
+
+// Flex credit cost per 2,000-token chunk by model tier
+const CREDIT_COSTS = { basic: 2, standard: 4, advanced: 16 };
+
+// Map model IDs to credit tiers
+const MODEL_CREDIT_TIER = {
+  sfdc_ai__DefaultVertexAIGemini30Flash: "basic",
+  sfdc_ai__DefaultVertexAIGeminiPro30: "standard",
+  sfdc_ai__DefaultGPT5: "standard",
+  sfdc_ai__DefaultGPT52: "standard",
+  sfdc_ai__DefaultBedrockNvidiaNemotronNano330b: "basic",
+  sfdc_ai__DefaultBedrockAnthropicClaude45Sonnet: "standard",
+  sfdc_ai__DefaultBedrockAnthropicClaude45Opus: "advanced"
+};
 
 const MODELS = [
   { id: "sfdc_ai__DefaultVertexAIGemini30Flash", label: "Gemini Flash 3.0", logoKey: "gemini", premium: false },
@@ -33,14 +50,6 @@ const LOGO_MAP = {
 
 const DEFAULT_MODEL = MODELS[0].id;
 
-const LOADING_STAGES = [
-  { text: "Building queries",       delay: 0 },
-  { text: "Querying your org data", delay: 3000 },
-  { text: "Analyzing results",      delay: 6000 },
-  { text: "Preparing your answer",  delay: 10000 },
-  { text: "Almost done",            delay: 15000 }
-];
-
 const CACHE_KEY = "agentforceWorkspace_session";
 const MODEL_KEY = "agentforceWorkspace_model";
 const TYPEWRITER_BLOCK_DELAY = 100;
@@ -56,19 +65,36 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
   // ─── Chat State ──────────────────────────────────────
   @track messages = [];
-  @track loadingText = LOADING_STAGES[0].text;
   @track suggestedReplies = [];
   @track selectedModelId = DEFAULT_MODEL;
   @track isModelPickerOpen = false;
-  @track intermediateStatus = "";
-  @track recordTabs = [];
-  @track pendingRecordTabs = null;
-  @track isChatLoading = false;
-  @track createdRecord = null;
+  @track agentSteps = [];
+  @track isDetailsPanelOpen = true;
+  @track sidebarRecordTabs = [];
+  @track sidebarChartData = null;
+
+  // ─── Collapsible Sidebar Sections ──────────────────
+  @track isProgressExpanded = true;
+  @track isRecordsExpanded = false;
+  @track isChartExpanded = false;
+  @track _recordsBadgeVisible = false;
+  @track _chartBadgeVisible = false;
+  @track isRecordsModalOpen = false;
+  @track isRecordViewModalOpen = false;
+  @track recordViewModalRecordId = null;
+  @track recordViewModalObjectApiName = null;
+  @track sidebarCreatedRecord = null;
+  @track isCreatedRecordExpanded = false;
+  @track _createdRecordBadgeVisible = false;
+
+  // ─── Usage Estimate State ──────────────────────────
+  @track sessionTokens = 0;
+  @track sessionCredits = 0;
+  @track contextTokens = 0;
+  @track isUsageExpanded = false;
 
   inputValue = "";
   isLoading = false;
-  _loadingTimerIds = [];
   _typewriterTimerIds = [];
   _cachedRecordTabs = [];
 
@@ -78,13 +104,47 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   // ─── Task Suggestions ────────────────────────────────
 
   get taskSuggestions() {
-    return [
-      { id: "t1", iconName: "utility:opportunity",  iconWrapClass: "task-icon-wrap task-icon-pipeline",  question: "What's my pipeline by stage?" },
-      { id: "t2", iconName: "utility:moneybag",     iconWrapClass: "task-icon-wrap task-icon-deals",     question: "What's the average deal size for closed-won this year?" },
-      { id: "t3", iconName: "utility:account",       iconWrapClass: "task-icon-wrap task-icon-accounts",  question: "Show me accounts with open opps but zero activities in the last 60 days" },
-      { id: "t4", iconName: "utility:graph",          iconWrapClass: "task-icon-wrap task-icon-campaigns", question: "How are my campaigns performing this quarter?" },
-      { id: "t5", iconName: "utility:add",            iconWrapClass: "task-icon-wrap task-icon-create",    question: "Create a new account" }
+    const ALL_TASKS = [
+      // Pipeline / Opportunity (orange)
+      { iconName: "utility:opportunity",  iconWrapClass: "task-icon-wrap task-icon-pipeline",  question: "What's my pipeline by stage?" },
+      { iconName: "utility:opportunity",  iconWrapClass: "task-icon-wrap task-icon-pipeline",  question: "Which deals are closing this month?" },
+      { iconName: "utility:opportunity",  iconWrapClass: "task-icon-wrap task-icon-pipeline",  question: "Show me deals in Negotiation over $50K" },
+      { iconName: "utility:opportunity",  iconWrapClass: "task-icon-wrap task-icon-pipeline",  question: "Deals stuck in Qualification for over 60 days?" },
+      { iconName: "utility:opportunity",  iconWrapClass: "task-icon-wrap task-icon-pipeline",  question: "Open deals with close dates that already passed?" },
+      { iconName: "utility:opportunity",  iconWrapClass: "task-icon-wrap task-icon-pipeline",  question: "Largest deals closing in the next 30 days?" },
+      // Deals / Money (green)
+      { iconName: "utility:moneybag",     iconWrapClass: "task-icon-wrap task-icon-deals",     question: "What's my total pipeline value right now?" },
+      { iconName: "utility:moneybag",     iconWrapClass: "task-icon-wrap task-icon-deals",     question: "Average deal size for closed-won this year?" },
+      { iconName: "utility:moneybag",     iconWrapClass: "task-icon-wrap task-icon-deals",     question: "Closed-won deals from last quarter?" },
+      { iconName: "utility:moneybag",     iconWrapClass: "task-icon-wrap task-icon-deals",     question: "What's my win rate — closed-won vs closed-lost?" },
+      { iconName: "utility:moneybag",     iconWrapClass: "task-icon-wrap task-icon-deals",     question: "Deals I moved to Proposal/Quote this quarter?" },
+      // Accounts (blue)
+      { iconName: "utility:company",      iconWrapClass: "task-icon-wrap task-icon-accounts",  question: "Accounts with no activity in the last 30 days?" },
+      { iconName: "utility:company",      iconWrapClass: "task-icon-wrap task-icon-accounts",  question: "Accounts I own with no open opportunities?" },
+      { iconName: "utility:company",      iconWrapClass: "task-icon-wrap task-icon-accounts",  question: "Accounts with open opps but no recent activities?" },
+      { iconName: "utility:company",      iconWrapClass: "task-icon-wrap task-icon-accounts",  question: "Show me my top accounts by annual revenue" },
+      // Contacts / People (purple)
+      { iconName: "utility:people",       iconWrapClass: "task-icon-wrap task-icon-contacts",  question: "Prospects with no email or call in 90 days?" },
+      { iconName: "utility:people",       iconWrapClass: "task-icon-wrap task-icon-contacts",  question: "Decision makers on my open deals over $100K?" },
+      { iconName: "utility:people",       iconWrapClass: "task-icon-wrap task-icon-contacts",  question: "Which leads have been stuck in the same status?" },
+      // Campaigns / Analytics (coral)
+      { iconName: "utility:graph",        iconWrapClass: "task-icon-wrap task-icon-campaigns", question: "How are my campaigns performing this quarter?" },
+      { iconName: "utility:graph",        iconWrapClass: "task-icon-wrap task-icon-campaigns", question: "Which campaigns drove the most won deals?" },
+      { iconName: "utility:graph",        iconWrapClass: "task-icon-wrap task-icon-campaigns", question: "Break down my open cases by priority" },
+      // Activities (teal)
+      { iconName: "utility:log_a_call",   iconWrapClass: "task-icon-wrap task-icon-create",    question: "Log a call" },
+      { iconName: "utility:task",         iconWrapClass: "task-icon-wrap task-icon-create",    question: "Log a task" },
+      { iconName: "utility:event",        iconWrapClass: "task-icon-wrap task-icon-create",    question: "Schedule a meeting" },
+      // Create (teal)
+      { iconName: "utility:add",          iconWrapClass: "task-icon-wrap task-icon-create",    question: "Create a new account" }
     ];
+
+    // Shuffle and pick 5 — use current hour as seed for session consistency
+    const seed = new Date().getHours();
+    const shuffled = [...ALL_TASKS].sort(
+      (a, b) => Math.sin(seed + ALL_TASKS.indexOf(a) * 7) - Math.sin(seed + ALL_TASKS.indexOf(b) * 7)
+    );
+    return shuffled.slice(0, 5).map((t, i) => ({ ...t, id: `t${i}` }));
   }
 
   // ─── Computed: Landing ────────────────────────────────
@@ -129,6 +189,164 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     return "active-section" + (this.isEntering ? " chat-enter" : "");
   }
 
+  // ─── Computed: Layout ──────────────────────────────────
+
+  get chatBodyClass() {
+    return "chat-body" + (this.showDetailsPanel ? " chat-body-split" : "");
+  }
+
+  get showDetailsPanel() {
+    return this.isDetailsPanelOpen;
+  }
+
+  // ─── Computed: Steps ───────────────────────────────────
+
+  get hasSteps() {
+    return this.agentSteps.length > 0;
+  }
+
+  get progressPercent() {
+    if (this.agentSteps.length === 0) return 0;
+    const completed = this.agentSteps.filter(s => s.status === "complete").length;
+    return Math.round((completed / this.agentSteps.length) * 100);
+  }
+
+  get progressBadgeClass() {
+    return "progress-badge" + (this.progressPercent === 100 ? " progress-badge-complete" : "");
+  }
+
+  get showStepsPlaceholder() {
+    return !this.hasSteps && !this.isLoading;
+  }
+
+  get hasRecordTabs() {
+    return this.sidebarRecordTabs && this.sidebarRecordTabs.length > 0;
+  }
+
+  get hasSidebarChart() {
+    return this.sidebarChartData && this.sidebarChartData.items && this.sidebarChartData.items.length > 0;
+  }
+
+  get noRecordTabs() {
+    return !this.hasRecordTabs;
+  }
+
+  get noSidebarChart() {
+    return !this.hasSidebarChart;
+  }
+
+  // ─── Collapsible Section Getters ─────────────────────
+
+  get progressChevronClass() {
+    return "collapsible-chevron" + (this.isProgressExpanded ? " collapsible-chevron-expanded" : "");
+  }
+
+  get recordsChevronClass() {
+    return "collapsible-chevron" + (this.isRecordsExpanded ? " collapsible-chevron-expanded" : "");
+  }
+
+  get chartChevronClass() {
+    return "collapsible-chevron" + (this.isChartExpanded ? " collapsible-chevron-expanded" : "");
+  }
+
+  get showRecordsBadge() {
+    return this._recordsBadgeVisible && !this.isRecordsExpanded;
+  }
+
+  get showChartBadge() {
+    return this._chartBadgeVisible && !this.isChartExpanded;
+  }
+
+  get hasSidebarCreatedRecord() {
+    return this.sidebarCreatedRecord !== null;
+  }
+
+  get showCreatedRecordBadge() {
+    return this._createdRecordBadgeVisible && !this.isCreatedRecordExpanded;
+  }
+
+  get createdRecordChevronClass() {
+    return "collapsible-chevron" + (this.isCreatedRecordExpanded ? " collapsible-chevron-expanded" : "");
+  }
+
+  get recordViewModalTitle() {
+    if (this.recordViewModalObjectApiName === 'Task') return 'Task Details';
+    if (this.recordViewModalObjectApiName === 'Event') return 'Event Details';
+    if (this.recordViewModalObjectApiName === 'Account') return 'Account Details';
+    return 'Record Details';
+  }
+
+  get recordViewSupportsUiApi() {
+    const unsupported = new Set(['Task', 'Event']);
+    return !unsupported.has(this.recordViewModalObjectApiName);
+  }
+
+  get recordViewIsActivity() {
+    return this.recordViewModalObjectApiName === 'Task' || this.recordViewModalObjectApiName === 'Event';
+  }
+
+  get recordViewIconName() {
+    if (this.sidebarCreatedRecord?.iconName) return this.sidebarCreatedRecord.iconName;
+    if (this.recordViewModalObjectApiName === 'Task') return 'standard:task';
+    if (this.recordViewModalObjectApiName === 'Event') return 'standard:event';
+    return 'standard:record';
+  }
+
+  get recordViewRecordName() {
+    return this.sidebarCreatedRecord?.recordName || '';
+  }
+
+  get recordViewFields() {
+    return (this.sidebarCreatedRecord?.fields || []).map((f, i) => ({
+      ...f,
+      key: `rv-field-${i}`
+    }));
+  }
+
+  get allSectionsExpanded() {
+    return this.isProgressExpanded && this.isRecordsExpanded && this.isChartExpanded && this.isUsageExpanded;
+  }
+
+  get toggleAllSectionsTitle() {
+    return this.allSectionsExpanded ? "Collapse all sections" : "Expand all sections";
+  }
+
+  // ─── Computed: Usage Estimate ─────────────────────
+
+  get formattedContextTokens() {
+    return this.contextTokens > 0 ? `~${this.contextTokens.toLocaleString()}` : "0";
+  }
+
+  get formattedSessionTokens() {
+    return this.sessionTokens.toLocaleString();
+  }
+
+  get formattedSessionCredits() {
+    return this.sessionCredits.toLocaleString();
+  }
+
+  get tokenMeterWidth() {
+    // Show meter relative to 20k token reference (a reasonable prompt ceiling)
+    const reference = 20000;
+    const pct = this.contextTokens > 0
+      ? Math.min((this.contextTokens / reference) * 100, 100)
+      : 0;
+    return `width: ${pct}%`;
+  }
+
+  get tokenMeterFillClass() {
+    const reference = 20000;
+    const pct = this.contextTokens > 0 ? (this.contextTokens / reference) * 100 : 0;
+    let color = "meter-fill-green";
+    if (pct > 75) color = "meter-fill-red";
+    else if (pct > 50) color = "meter-fill-yellow";
+    return `token-meter-fill ${color}`;
+  }
+
+  get usageChevronClass() {
+    return "usage-chevron" + (this.isUsageExpanded ? " usage-chevron-expanded" : "");
+  }
+
   // ─── Computed: Chat ───────────────────────────────────
 
   get sendDisabled() {
@@ -145,12 +363,8 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     return last && last.isAgent;
   }
 
-  get showIntermediateStatus() {
-    return this.isLoading && this.intermediateStatus;
-  }
-
-  get showTypingAvatar() {
-    return !this.showIntermediateStatus;
+  get showTypingIndicator() {
+    return this.isLoading;
   }
 
   get modelBtnClass() {
@@ -167,24 +381,6 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     }));
   }
 
-  // ─── Record List ──────────────────────────────────────
-
-  get hasRecordTabs() {
-    return this.recordTabs && this.recordTabs.length > 0;
-  }
-
-  get showRecordList() {
-    return (this.hasRecordTabs || this.isChatLoading) && !this.createdRecord;
-  }
-
-  get hasCreatedRecord() {
-    return this.createdRecord !== null;
-  }
-
-  get hasPendingUpdate() {
-    return this.pendingRecordTabs !== null;
-  }
-
   // ─── Lifecycle ────────────────────────────────────────
 
   connectedCallback() {
@@ -193,6 +389,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this._loadLandingHeadline();
     this._loadUserPhoto();
     this._restoreFromCache();
+    this._loadUsageMetrics();
   }
 
   async _loadLandingHeadline() {
@@ -218,7 +415,6 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   }
 
   disconnectedCallback() {
-    this._stopLoadingRotation();
     this._clearTypewriterTimers();
   }
 
@@ -226,6 +422,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
   handleLandingInput(event) {
     this.landingInputValue = event.target.value;
+    this._resizeTextarea(event.target, 160);
   }
 
   handleLandingKeyDown(event) {
@@ -269,6 +466,98 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this.isLandingModelPickerOpen = false;
   }
 
+  // ─── Details Panel ─────────────────────────────────────
+
+  handleToggleDetailsPanel() {
+    this.isDetailsPanelOpen = !this.isDetailsPanelOpen;
+  }
+
+  handleCloseDetailsPanel() {
+    this.isDetailsPanelOpen = false;
+  }
+
+  handleToggleProgress() {
+    this.isProgressExpanded = !this.isProgressExpanded;
+  }
+
+  handleToggleRecords() {
+    this.isRecordsExpanded = !this.isRecordsExpanded;
+    // Dismiss badge when opening
+    if (this.isRecordsExpanded) {
+      this._recordsBadgeVisible = false;
+    }
+  }
+
+  handleToggleCreatedRecord() {
+    this.isCreatedRecordExpanded = !this.isCreatedRecordExpanded;
+    if (this.isCreatedRecordExpanded) {
+      this._createdRecordBadgeVisible = false;
+    }
+  }
+
+  handleOpenRecordsModal() {
+    this.isRecordsModalOpen = true;
+  }
+
+  handleCloseRecordsModal() {
+    this.isRecordsModalOpen = false;
+  }
+
+  handleViewRecord(event) {
+    const { recordId, objectApiName } = event.detail;
+    if (recordId) {
+      this.recordViewModalRecordId = recordId;
+      this.recordViewModalObjectApiName = objectApiName;
+      this.isRecordViewModalOpen = true;
+    }
+  }
+
+  handleCloseRecordViewModal() {
+    this.isRecordViewModalOpen = false;
+    this.recordViewModalRecordId = null;
+    this.recordViewModalObjectApiName = null;
+  }
+
+  handleNavigateToRecord() {
+    if (this.recordViewModalRecordId) {
+      this[NavigationMixin.Navigate]({
+        type: "standard__recordPage",
+        attributes: {
+          recordId: this.recordViewModalRecordId,
+          objectApiName: this.recordViewModalObjectApiName,
+          actionName: "view"
+        }
+      });
+      this.handleCloseRecordViewModal();
+    }
+  }
+
+  handleToggleChart() {
+    this.isChartExpanded = !this.isChartExpanded;
+    // Dismiss badge when opening
+    if (this.isChartExpanded) {
+      this._chartBadgeVisible = false;
+    }
+  }
+
+  handleToggleUsage() {
+    this.isUsageExpanded = !this.isUsageExpanded;
+  }
+
+  handleToggleAllSections() {
+    const expand = !this.allSectionsExpanded;
+    this.isProgressExpanded = expand;
+    this.isRecordsExpanded = expand;
+    this.isChartExpanded = expand;
+    this.isCreatedRecordExpanded = expand;
+    this.isUsageExpanded = expand;
+    if (expand) {
+      this._recordsBadgeVisible = false;
+      this._chartBadgeVisible = false;
+      this._createdRecordBadgeVisible = false;
+    }
+  }
+
   // ─── Transition ───────────────────────────────────────
 
   _transitionToChat(message) {
@@ -306,7 +595,10 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         messages: this.messages,
         selectedModelId: this.selectedModelId,
         suggestedReplies: this.suggestedReplies,
-        recordTabs: this._cachedRecordTabs,
+        isDetailsPanelOpen: this.isDetailsPanelOpen,
+        sidebarRecordTabs: this.sidebarRecordTabs,
+        sidebarChartData: this.sidebarChartData,
+        sidebarCreatedRecord: this.sidebarCreatedRecord,
         timestamp: Date.now()
       };
       localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
@@ -350,13 +642,27 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         this.selectedModelId = cached.selectedModelId;
       }
 
+      if (cached.isDetailsPanelOpen !== undefined) {
+        this.isDetailsPanelOpen = cached.isDetailsPanelOpen;
+      }
+
       // Restore active chat state — only if there are actual messages to show
       if (cached.isLanding === false && cached.messages && cached.messages.length > 0) {
         this.isLanding = false;
         this.messages = cached.messages;
         this.suggestedReplies = cached.suggestedReplies || [];
-        this._cachedRecordTabs = cached.recordTabs || [];
-        this.recordTabs = cached.recordTabs || [];
+        // Restore sidebar data from cache
+        if (cached.sidebarRecordTabs && cached.sidebarRecordTabs.length > 0) {
+          this.sidebarRecordTabs = cached.sidebarRecordTabs;
+          this._cachedRecordTabs = cached.sidebarRecordTabs;
+        }
+        if (cached.sidebarChartData) {
+          this.sidebarChartData = cached.sidebarChartData;
+        }
+        if (cached.sidebarCreatedRecord) {
+          this.sidebarCreatedRecord = cached.sidebarCreatedRecord;
+          this.isCreatedRecordExpanded = true;
+        }
       }
     } catch (_e) {
       // corrupt cache
@@ -375,6 +681,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
   handleInput(event) {
     this.inputValue = event.target.value;
+    this._resizeTextarea(event.target, 160);
   }
 
   handleKeyDown(event) {
@@ -436,17 +743,73 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this._clearCache();
     this.messages = [];
     this.suggestedReplies = [];
-    this.intermediateStatus = "";
     this._cachedRecordTabs = [];
-    this.recordTabs = [];
-    this.pendingRecordTabs = null;
-    this.isChatLoading = false;
-    this.createdRecord = null;
+    this.sidebarRecordTabs = [];
+    this.sidebarChartData = null;
+    this.agentSteps = [];
+    this.sidebarCreatedRecord = null;
+    this.isProgressExpanded = true;
+    this.isRecordsExpanded = false;
+    this.isChartExpanded = false;
+    this.isCreatedRecordExpanded = false;
+    this._recordsBadgeVisible = false;
+    this._chartBadgeVisible = false;
+    this._createdRecordBadgeVisible = false;
     this.inputValue = "";
     this._clearInput();
     this.isLoading = false;
-    this._stopLoadingRotation();
     this._clearTypewriterTimers();
+    this.sessionTokens = 0;
+    this.sessionCredits = 0;
+    this.contextTokens = 0;
+    this._saveUsageMetrics();
+  }
+
+  // ─── Step Management ──────────────────────────────────
+
+  _addStep(label) {
+    const step = {
+      id: "step-" + Date.now() + "-" + Math.random().toString(36).substr(2, 4),
+      label,
+      status: "in-progress",
+      isComplete: false,
+      isInProgress: true,
+      isPending: false,
+      statusClass: "step-item step-in-progress"
+    };
+    this.agentSteps = [...this.agentSteps, step];
+    return step.id;
+  }
+
+  _completeStep(stepId) {
+    this.agentSteps = this.agentSteps.map(s =>
+      s.id === stepId
+        ? { ...s, status: "complete", isComplete: true, isInProgress: false, isPending: false, statusClass: "step-item step-complete" }
+        : s
+    );
+  }
+
+  _addCompletedStep(label) {
+    const step = {
+      id: "step-" + Date.now() + "-" + Math.random().toString(36).substr(2, 4),
+      label,
+      status: "complete",
+      isComplete: true,
+      isInProgress: false,
+      isPending: false,
+      statusClass: "step-item step-complete"
+    };
+    this.agentSteps = [...this.agentSteps, step];
+    return step.id;
+  }
+
+  _clearSteps() {
+    this.agentSteps = [];
+  }
+
+  _getModelLabel() {
+    const model = MODELS.find(m => m.id === this.selectedModelId);
+    return model ? model.label : "AI";
   }
 
   // ─── Send ─────────────────────────────────────────────
@@ -462,13 +825,12 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     }
 
     this.suggestedReplies = [];
-    this.intermediateStatus = "";
     this.messages = [...this.messages, this._makeMsg("user", text)];
     this.inputValue = "";
     this._clearInput();
     this.isLoading = true;
-    this.isChatLoading = true;
-    this._startLoadingRotation();
+    this._clearSteps();
+    this.isDetailsPanelOpen = true;
     this._scrollToBottom();
     this._saveToCache();
     // eslint-disable-next-line @lwc/lwc/no-async-operation
@@ -480,34 +842,46 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     try {
       const history = this._buildHistory();
 
-      // Stage 1: Build queries + get records
+      // ── Step 1: Build queries + get records ──
+      const buildStepId = this._addStep("Querying your Salesforce data...");
+
       const queryResult = await buildQueries({
         userMessage: text,
         conversationHistory: history,
         modelName: this.selectedModelId
       });
 
-      // Show record tabs immediately
+      this._completeStep(buildStepId);
+
+      // Show record tabs inline in the chat
       const newRecordTabs = queryResult?.recordTabs ?? [];
       if (newRecordTabs.length > 0) {
+        // Add a completed step for each object type found
+        for (const tab of newRecordTabs) {
+          const label = tab.recordCount === 1 ? this._singularize(tab.objectLabel) : tab.objectLabel;
+          this._addCompletedStep(`Found ${tab.recordCount} ${label}...`);
+        }
         this._cachedRecordTabs = newRecordTabs;
-        this._applyRecordTabs(newRecordTabs, false);
-      }
-
-      // Show intermediate status
-      const summary = queryResult?.querySummary ?? "";
-      if (summary && queryResult?.hasResults) {
-        this.intermediateStatus = summary + " \u2014 analyzing now...";
+        // Show records in the sidebar with notification badge
+        this.sidebarRecordTabs = newRecordTabs;
+        if (!this.isRecordsExpanded) {
+          this._recordsBadgeVisible = true;
+        }
         this._scrollToBottom();
+      } else {
+        this._addCompletedStep("No matching records found...");
       }
 
-      this._setLoadingStageText("Analyzing results");
+      // ── Step 2: Analyze results ──
+      const analyzeStepId = this._addStep("Agentforce is analyzing the data...");
 
-      // Stage 2: Analyze results
       const executionDataJson = queryResult?.executionDataJson ?? "";
+      const summary = queryResult?.querySummary ?? "";
       if (!executionDataJson) {
+        this._completeStep(analyzeStepId);
         const fallback = summary || "I couldn't process that question. Try rephrasing or switching to a different model.";
         this.messages = [...this.messages, this._makeMsg("agent", `<p>${fallback}</p>`)];
+        this._trackUsage(text, fallback);
         this._saveToCache();
       } else {
         const analysis = await analyzeResults({
@@ -517,29 +891,45 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
           modelName: this.selectedModelId
         });
 
+        this._completeStep(analyzeStepId);
+
         const rawResponse = analysis?.response ?? analysis ?? "";
         const responseText = this._normalizeMarkdown(rawResponse);
 
         // Guard against empty AI responses
         if (!responseText || responseText.trim().length === 0) {
           this.messages = [...this.messages, this._makeMsg("agent", "<p>I received an empty response from the AI. Please try your question again or try a different model.</p>")];
-          this.intermediateStatus = "";
           this._saveToCache();
+          this.isLoading = false;
+          this._scrollToBottom();
           return;
         }
 
-        this.intermediateStatus = "";
+        this._addCompletedStep("Response ready...");
         await this._typewriterReveal(responseText);
 
         this._reconcileRecordTabs(responseText);
+        this._trackUsage(text, responseText);
 
         this.suggestedReplies = analysis?.suggestions ?? [];
         this._saveToCache();
 
+        // Show chart in the sidebar with notification badge
+        const chartData = analysis?.chartData;
+        if (chartData && chartData.items && chartData.items.length > 0) {
+          this.sidebarChartData = chartData;
+          if (!this.isChartExpanded) {
+            this._chartBadgeVisible = true;
+          }
+          this._saveToCache();
+        }
+
+        // Insert created record inline if present
         if (analysis?.createdRecord) {
-          this.createdRecord = analysis.createdRecord;
-          this.recordTabs = [];
-          this.pendingRecordTabs = null;
+          this.sidebarCreatedRecord = analysis.createdRecord;
+          this.isCreatedRecordExpanded = true;
+          this._createdRecordBadgeVisible = false;
+          this._saveToCache();
         }
       }
     } catch (error) {
@@ -556,37 +946,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
       this._saveToCache();
     } finally {
       this.isLoading = false;
-      this.isChatLoading = false;
-      this.intermediateStatus = "";
-      this._stopLoadingRotation();
       this._scrollToBottom();
-    }
-  }
-
-  // ─── Record Management ────────────────────────────────
-
-  _applyRecordTabs(newTabs, forceUpdate) {
-    if (newTabs.length > 0 || forceUpdate) {
-      this.createdRecord = null;
-    }
-
-    if (forceUpdate) {
-      this.recordTabs = newTabs;
-      this.pendingRecordTabs = null;
-    } else if (newTabs.length > 0) {
-      if (this.recordTabs.length === 0) {
-        this.recordTabs = newTabs;
-        this.pendingRecordTabs = null;
-      } else {
-        this.pendingRecordTabs = newTabs;
-      }
-    }
-  }
-
-  handleRefreshRecords() {
-    if (this.pendingRecordTabs !== null) {
-      this.recordTabs = this.pendingRecordTabs;
-      this.pendingRecordTabs = null;
     }
   }
 
@@ -623,41 +983,11 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   // ─── Conversation History ─────────────────────────────
 
   _buildHistory() {
-    const recent = this.messages.slice(-MAX_HISTORY_TURNS * 2);
+    const turns = this.messages.filter(m => m.isAgent || m.isUser);
+    const recent = turns.slice(-MAX_HISTORY_TURNS * 2);
     return recent
       .map((m) => (m.role === "user" ? "USER: " : "ASSISTANT: ") + m.content)
       .join("\n");
-  }
-
-  // ─── Stage-Aware Loading ──────────────────────────────
-
-  _startLoadingRotation() {
-    this._stopLoadingRotation();
-    this.loadingText = LOADING_STAGES[0].text;
-    for (let i = 1; i < LOADING_STAGES.length; i++) {
-      const stage = LOADING_STAGES[i];
-      // eslint-disable-next-line @lwc/lwc/no-async-operation
-      const timerId = setTimeout(() => {
-        if (this.isLoading) {
-          this.loadingText = stage.text;
-        }
-      }, stage.delay);
-      this._loadingTimerIds.push(timerId);
-    }
-  }
-
-  _stopLoadingRotation() {
-    for (const id of this._loadingTimerIds) {
-      clearTimeout(id);
-    }
-    this._loadingTimerIds = [];
-  }
-
-  _setLoadingStageText(text) {
-    if (this.isLoading) {
-      this._stopLoadingRotation();
-      this.loadingText = text;
-    }
   }
 
   // ─── Typewriter Effect ────────────────────────────────
@@ -691,6 +1021,9 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         timestamp,
         isAgent: true,
         isUser: false,
+        isRecords: false,
+        isChart: false,
+        isCreatedRecord: false,
         rowClass: "message-row agent-msg"
       }
     ];
@@ -746,14 +1079,12 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
     const referencedIds = this._extractLinkedRecordIds(analysisHtml);
 
-    // No specific records mentioned — keep original tabs as-is
     if (referencedIds.size === 0) {
-      this._applyRecordTabs(this._cachedRecordTabs, true);
+      // No specific records mentioned — keep original tabs as-is
       return;
     }
 
-    // Group mentioned rows by their source tab (object type)
-    // Pick the object with the most mentioned records for the Specific Records tab
+    // Find the object tab with the most mentioned records
     let bestTab = null;
     let bestRows = [];
 
@@ -776,11 +1107,9 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         columns: bestTab.columns,
         rows: bestRows
       };
-      // Prepend specific tab, then keep all original tabs
       const combined = [specificTab, ...this._cachedRecordTabs];
-      this._applyRecordTabs(combined, true);
-    } else {
-      this._applyRecordTabs(this._cachedRecordTabs, true);
+      this._cachedRecordTabs = combined;
+      this.sidebarRecordTabs = combined;
     }
   }
 
@@ -810,20 +1139,6 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     return false;
   }
 
-  _extractMentionedRows(referencedIds) {
-    const seen = new Set();
-    const rows = [];
-    for (const tab of this._cachedRecordTabs) {
-      for (const row of tab.rows || []) {
-        if (this._rowMatchesIds(row, referencedIds) && !seen.has(row._id)) {
-          seen.add(row._id);
-          rows.push(row);
-        }
-      }
-    }
-    return rows;
-  }
-
   // ─── Markdown Normalizer ──────────────────────────────
 
   _normalizeMarkdown(text) {
@@ -834,9 +1149,45 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     out = out.replace(/\*([^*\n]+?)\*/g, "<em>$1</em>");
     out = out.replace(/_([^_\n]+?)_/g, "<em>$1</em>");
     out = out.replace(/`([^`\n]+?)`/g, "<code>$1</code>");
-    // Inject inline styles for tables (lightning-formatted-rich-text shadow DOM blocks CSS)
+    // Convert newlines to <br> for proper spacing
+    // Only convert \n that are NOT immediately between closing and opening block tags
+    out = out.replace(/\n\n/g, "<br><br>");
+    out = out.replace(/(?<!\>)\n(?!\<)/g, "<br>");
+    out = out.replace(/\n/g, " ");
     out = this._inlineTableStyles(out);
+    out = this._inlineBlockStyles(out);
     return out;
+  }
+
+  /**
+   * Inject inline styles on block elements (p, blockquote, ul, ol, hr).
+   * lightning-formatted-rich-text shadow DOM blocks external CSS,
+   * so we must inline styles — same pattern as _inlineTableStyles.
+   */
+  _inlineBlockStyles(html) {
+    if (!html) return html;
+    // <p> — add bottom margin for paragraph spacing
+    html = html.replace(/<p(?:\s[^>]*)?>/gi, (match) => {
+      if (match.includes("style=")) return match;
+      return '<p style="margin:0 0 0.75rem 0">';
+    });
+    // <blockquote> — teal left border, padding, background
+    html = html.replace(/<blockquote(?:\s[^>]*)?>/gi, (match) => {
+      if (match.includes("style=")) return match;
+      return '<blockquote style="margin:1rem 0;padding:0.75rem 1rem;border-left:3px solid #17B0A4;background:rgba(23,176,164,0.04);border-radius:0 6px 6px 0">';
+    });
+    // <ul> / <ol> — left padding + margin
+    html = html.replace(/<ul(?:\s[^>]*)?>/gi, (match) => {
+      if (match.includes("style=")) return match;
+      return '<ul style="margin:0.375rem 0;padding-left:1.25rem">';
+    });
+    html = html.replace(/<ol(?:\s[^>]*)?>/gi, (match) => {
+      if (match.includes("style=")) return match;
+      return '<ol style="margin:0.375rem 0;padding-left:1.25rem">';
+    });
+    // <hr> — subtle divider
+    html = html.replace(/<hr\s*\/?>/gi, '<hr style="border:none;border-top:1px solid rgba(0,0,0,0.1);margin:1rem 0">');
+    return html;
   }
 
   _inlineTableStyles(html) {
@@ -858,11 +1209,76 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     return html;
   }
 
+  // ─── Usage Tracking ──────────────────────────────
+
+  _estimateContextTokens() {
+    const history = this._buildHistory();
+    const historyTokens = history ? Math.ceil(history.length / 4) : 0;
+    return historyTokens + PROMPT_OVERHEAD_TOKENS;
+  }
+
+  _trackUsage(userText, assistantText) {
+    const contextTokens = this._estimateContextTokens();
+    const messageTokens = Math.ceil((userText.length + assistantText.length) / 4);
+    const totalTokens = contextTokens + messageTokens;
+
+    // Each 2,000-token chunk counts as one prompt (rounded up)
+    const promptChunks = Math.ceil(totalTokens / 2000);
+
+    const creditTier = MODEL_CREDIT_TIER[this.selectedModelId] || "standard";
+    const costPerChunk = CREDIT_COSTS[creditTier] || 4;
+    const creditsUsed = promptChunks * costPerChunk;
+
+    this.contextTokens = contextTokens;
+    this.sessionTokens += totalTokens;
+    this.sessionCredits += creditsUsed;
+
+    this._saveUsageMetrics();
+  }
+
+  _saveUsageMetrics() {
+    try {
+      localStorage.setItem(USAGE_KEY, JSON.stringify({
+        sessionTokens: this.sessionTokens,
+        sessionCredits: this.sessionCredits,
+        contextTokens: this.contextTokens
+      }));
+    } catch (_e) {
+      // storage full
+    }
+  }
+
+  _loadUsageMetrics() {
+    try {
+      const stored = localStorage.getItem(USAGE_KEY);
+      if (stored) {
+        const data = JSON.parse(stored);
+        this.sessionTokens = data.sessionTokens || 0;
+        this.sessionCredits = data.sessionCredits || 0;
+        this.contextTokens = data.contextTokens || 0;
+      }
+    } catch (_e) {
+      // corrupt
+    }
+  }
+
   // ─── DOM Helpers ──────────────────────────────────────
 
   _clearInput() {
     const input = this.template.querySelector(".chat-input");
-    if (input) input.value = "";
+    if (input) {
+      input.value = "";
+      this._resizeTextarea(input, 160);
+    }
+  }
+
+  _resizeTextarea(el, maxHeightPx = 160) {
+    if (!el || el.tagName !== "TEXTAREA") return;
+    const prevOverflow = el.style.overflowY;
+    el.style.overflowY = "hidden";
+    el.style.height = "0";
+    el.style.height = Math.min(el.scrollHeight, maxHeightPx) + "px";
+    el.style.overflowY = prevOverflow || "auto";
   }
 
   _scrollToBottom() {
@@ -883,8 +1299,67 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
       timestamp: this._now(),
       isAgent: role === "agent",
       isUser: role === "user",
+      isRecords: false,
+      isChart: false,
+      isCreatedRecord: false,
       rowClass: role === "user" ? "message-row user-msg" : "message-row agent-msg"
     };
+  }
+
+  _makeRecordsMsg(recordTabsData) {
+    return {
+      id: this._uid(),
+      role: "records",
+      content: "",
+      timestamp: this._now(),
+      isAgent: false,
+      isUser: false,
+      isRecords: true,
+      isChart: false,
+      isCreatedRecord: false,
+      recordTabsData,
+      rowClass: "message-row records-msg"
+    };
+  }
+
+  _makeChartMsg(chartData) {
+    return {
+      id: this._uid(),
+      role: "chart",
+      content: "",
+      timestamp: this._now(),
+      isAgent: false,
+      isUser: false,
+      isRecords: false,
+      isChart: true,
+      isCreatedRecord: false,
+      chartData,
+      rowClass: "message-row chart-msg"
+    };
+  }
+
+  _makeCreatedRecordMsg(createdRecordData) {
+    return {
+      id: this._uid(),
+      role: "created-record",
+      content: "",
+      timestamp: this._now(),
+      isAgent: false,
+      isUser: false,
+      isRecords: false,
+      isChart: false,
+      isCreatedRecord: true,
+      createdRecordData,
+      rowClass: "message-row created-record-msg"
+    };
+  }
+
+  _singularize(label) {
+    if (!label) return label;
+    if (label.endsWith("ies")) return label.slice(0, -3) + "y";
+    if (label.endsWith("ses") || label.endsWith("xes") || label.endsWith("zes") || label.endsWith("hes")) return label.slice(0, -2);
+    if (label.endsWith("s") && !label.endsWith("ss")) return label.slice(0, -1);
+    return label;
   }
 
   _uid() {

@@ -18,7 +18,7 @@
       <!-- Record info -->
       <div class="card-body">
         <div class="record-identity">
-          <a href="#" class="record-name" onclick={handleOpenRecord}>{recordName}</a>
+          <a href="#" class="record-name" onclick={handleViewRecord}>{recordName}</a>
           <span class="object-label">{objectLabel}</span>
         </div>
 
@@ -37,7 +37,7 @@
 
       <!-- Footer -->
       <div class="card-footer">
-        <a href="#" class="open-link" onclick={handleOpenRecord}>
+        <a href="#" class="open-link" onclick={handleNavigateToRecord}>
           Open in Salesforce
           <lightning-icon icon-name="utility:new_window" size="xx-small" class="open-link-icon"></lightning-icon>
         </a>

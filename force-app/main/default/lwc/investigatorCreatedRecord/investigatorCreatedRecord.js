@@ -33,7 +33,20 @@ export default class InvestigatorCreatedRecord extends NavigationMixin(
     return this.fields.length > 0;
   }
 
-  handleOpenRecord(event) {
+  handleViewRecord(event) {
+    event.preventDefault();
+    const recordId = this.createdRecord?.recordId;
+    const objectApiName = this.createdRecord?.objectApiName;
+    if (recordId) {
+      this.dispatchEvent(new CustomEvent('viewrecord', {
+        detail: { recordId, objectApiName },
+        bubbles: true,
+        composed: true
+      }));
+    }
+  }
+
+  handleNavigateToRecord(event) {
     event.preventDefault();
     const recordId = this.createdRecord?.recordId;
     const objectApiName = this.createdRecord?.objectApiName;

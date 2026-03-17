@@ -38,7 +38,10 @@ public with sharing class BusinessIntelligence {
 
     try {
       String userId = UserInfo.getUserId();
-      String userName = UserInfo.getName();
+      String userName = UserInfo.getFirstName();
+      if (String.isBlank(userName)) {
+          userName = UserInfo.getName().split(' ')[0];
+      }
 
       // --- Pass 1: NL to SOQL ---
       String schemaContext = buildSchemaContext();
@@ -126,8 +129,9 @@ public with sharing class BusinessIntelligence {
     parts.add('**Contract** — Contract/agreement record\n');
     parts.add('Key fields: Id, ContractNumber, AccountId, Status, StartDate, EndDate, ContractTerm, OwnerId, CreatedDate\n\n');
 
-    parts.add('**OpportunityContactRole** — Contact role on an opportunity\n');
-    parts.add('Key fields: Id, OpportunityId, ContactId, Role, IsPrimary\n\n');
+    parts.add('**OpportunityContactRole** — Links Contact to Opportunity with a Role (e.g., Decision Maker, Champion, Evaluator, Economic Buyer). REQUIRED when the user asks about decision makers, contact roles, stakeholders, or contacts on opportunities.\n');
+    parts.add('Key fields: Id, OpportunityId, ContactId, Role, IsPrimary, Contact.Name, Contact.Email, Opportunity.Name, Opportunity.Amount, Opportunity.StageName\n');
+    parts.add('Query pattern: SELECT Id, OpportunityId, ContactId, Role, IsPrimary, Contact.Name, Contact.Email, Opportunity.Name, Opportunity.Amount FROM OpportunityContactRole WHERE OpportunityId IN (SELECT Id FROM Opportunity WHERE ...) [AND Role = \'Decision Maker\' if user asks for decision makers]. Always include Contact.Name and Opportunity.Name for display.\n\n');
 
     parts.add('**User** — Salesforce user record\n');
     parts.add('Key fields: Id, Name, FirstName, LastName, Email, Username, IsActive, UserRoleId, ProfileId, ManagerId, Department, Title, Phone, CreatedDate\n\n');
@@ -225,6 +229,7 @@ public with sharing class BusinessIntelligence {
     parts.add('5. Today\'s date is ' + Date.today().format() + '. Use this for relative date calculations.\n');
     parts.add('6. For date ranges, prefer Salesforce date literals when possible: TODAY, YESTERDAY, THIS_WEEK, LAST_WEEK, THIS_MONTH, LAST_MONTH, THIS_QUARTER, LAST_QUARTER, THIS_YEAR, LAST_YEAR, NEXT_N_DAYS:n, LAST_N_DAYS:n, NEXT_N_MONTHS:n, LAST_N_MONTHS:n.\n');
     parts.add('7. Use aggregate functions (COUNT, SUM, AVG, MIN, MAX) with GROUP BY when the question asks for totals, averages, or grouped data.\n');
+    parts.add('   IMPORTANT: Never GROUP BY long text or non-groupable fields (Subject, Description, Body, Comment, MessageBody, etc.). For activity analysis, GROUP BY ActivityType, Status, or TaskSubtype instead. Use ORDER BY for sorting by text fields.\n');
     parts.add('8. For questions requiring data from multiple objects, generate multiple queries.\n');
     parts.add('9. Always include relevant fields that help answer the question — don\'t just return IDs.\n');
     parts.add('10. Prefer ORDER BY on relevant fields (e.g., CloseDate, Amount, CreatedDate) to surface the most useful data.\n');
@@ -239,7 +244,8 @@ public with sharing class BusinessIntelligence {
     parts.add('    also write SELECT COUNT() FROM Opportunity WHERE OwnerId = \'...\' AND IsClosed = false\n');
     parts.add('    The detail query is capped at 200 rows, but the COUNT gives the TRUE total across all records.\n');
     parts.add('    Put the COUNT query FIRST so the analyst sees the accurate total before the detail rows.\n');
-    parts.add('    For grouped aggregates (SUM/AVG with GROUP BY), a separate COUNT is not needed.\n\n');
+    parts.add('    For grouped aggregates (SUM/AVG with GROUP BY), a separate COUNT is not needed.\n');
+    parts.add('15. CONTACT ROLES ON OPPORTUNITIES — When the user asks about decision makers, contact roles, stakeholders, or contacts on opportunities, you MUST generate an OpportunityContactRole query in addition to any Opportunity query. Use: SELECT Id, OpportunityId, ContactId, Role, IsPrimary, Contact.Name, Contact.Email, Opportunity.Name, Opportunity.Amount FROM OpportunityContactRole WHERE OpportunityId IN (SELECT Id FROM Opportunity WHERE ...) [AND Role = \'Decision Maker\' when user asks for decision makers]. Include the COUNT query for OpportunityContactRole as well.\n\n');
 
     parts.add('## RUNNING USER CONTEXT\n');
     parts.add('- User ID: ' + userId + '\n');
@@ -637,7 +643,7 @@ public with sharing class BusinessIntelligence {
 
     parts.add('**VOICE & TONE:**\n');
     parts.add('- You are a helpful business analyst talking to a colleague. Be warm, direct, and insightful.\n');
-    parts.add('- Address the user by first name (' + userName.split(' ')[0] + ').\n');
+    parts.add('- Address the user by first name (' + userName + ').\n');
     parts.add('- Write in plain business English. Sound like a smart coworker, not a database.\n');
     parts.add('- Focus on WHAT the data means and WHY it matters, not HOW you got the data.\n\n');
 
