@@ -2221,6 +2221,13 @@
   border-radius: 4px;
 }
 
+/* Chart Modal — mid-size for visualizations */
+.chart-modal {
+  width: 60vw;
+  max-width: 720px;
+  max-height: 70vh;
+}
+
 /* Record View Modal — slightly narrower */
 .record-view-modal {
   width: 70vw;

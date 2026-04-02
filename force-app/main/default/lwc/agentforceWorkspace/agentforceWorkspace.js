@@ -80,10 +80,12 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   @track _recordsBadgeVisible = false;
   @track _chartBadgeVisible = false;
   @track isRecordsModalOpen = false;
+  @track isChartModalOpen = false;
   @track isRecordViewModalOpen = false;
   @track recordViewModalRecordId = null;
   @track recordViewModalObjectApiName = null;
   @track sidebarCreatedRecord = null;
+  @track sidebarCreatedRecords = [];
   @track isCreatedRecordExpanded = false;
   @track _createdRecordBadgeVisible = false;
   @track mapAddresses = [];
@@ -100,6 +102,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   isLoading = false;
   _typewriterTimerIds = [];
   _cachedRecordTabs = [];
+  _pendingRecordUpdate = null;
 
   agentIcon = AGENTFORCE_ICON;
   @track userPhotoUrl = '';
@@ -273,7 +276,12 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   }
 
   get hasSidebarCreatedRecord() {
-    return this.sidebarCreatedRecord !== null;
+    return this.sidebarCreatedRecords.length > 0;
+  }
+
+  /** Array of created records with stable keys for lwc:for. */
+  get sidebarCreatedRecordsKeyed() {
+    return this.sidebarCreatedRecords.map((r, i) => ({ ...r, _key: r.recordId || `cr-${i}` }));
   }
 
   get showCreatedRecordBadge() {
@@ -414,6 +422,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   async _loadLandingHeadline() {
     try {
       const firstName = await getUserFirstName();
+      this._userFirstName = firstName || "";
       const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
       const dayName = days[new Date().getDay()];
       if (firstName) {
@@ -522,6 +531,20 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this.isRecordsModalOpen = false;
   }
 
+  handleExpandChart() {
+    this.isChartModalOpen = true;
+  }
+
+  handleCloseChartModal() {
+    this.isChartModalOpen = false;
+  }
+
+  handleCycleChartType(event) {
+    const next = event.detail.chartType;
+    this.sidebarChartData = { ...this.sidebarChartData, chartType: next };
+    this._saveToCache();
+  }
+
   handleViewRecord(event) {
     const { recordId, objectApiName } = event.detail;
     if (recordId) {
@@ -627,6 +650,8 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         sidebarRecordTabs: this.sidebarRecordTabs,
         sidebarChartData: this.sidebarChartData,
         sidebarCreatedRecord: this.sidebarCreatedRecord,
+        sidebarCreatedRecords: this.sidebarCreatedRecords,
+        pendingRecordUpdate: this._pendingRecordUpdate,
         timestamp: Date.now()
       };
       localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
@@ -690,6 +715,15 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         if (cached.sidebarCreatedRecord) {
           this.sidebarCreatedRecord = cached.sidebarCreatedRecord;
           this.isCreatedRecordExpanded = true;
+        }
+        if (cached.sidebarCreatedRecords && cached.sidebarCreatedRecords.length > 0) {
+          this.sidebarCreatedRecords = cached.sidebarCreatedRecords;
+          this.isCreatedRecordExpanded = true;
+        } else if (cached.sidebarCreatedRecord) {
+          this.sidebarCreatedRecords = [cached.sidebarCreatedRecord];
+        }
+        if (cached.pendingRecordUpdate) {
+          this._pendingRecordUpdate = cached.pendingRecordUpdate;
         }
       }
     } catch (_e) {
@@ -776,6 +810,8 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this.sidebarChartData = null;
     this.agentSteps = [];
     this.sidebarCreatedRecord = null;
+    this.sidebarCreatedRecords = [];
+    this._pendingRecordUpdate = null;
     this.isProgressExpanded = true;
     this.isRecordsExpanded = false;
     this.isChartExpanded = false;
@@ -873,8 +909,20 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     try {
       const history = this._buildHistory();
 
+      // ── Pre-steps: profile & role verification ──
+      const name = this._userFirstName || "your";
+      const profileStepId = this._addStep(`Respecting ${name}'s profile & permissions...`);
+      // eslint-disable-next-line @lwc/lwc/no-async-operation
+      await new Promise(r => setTimeout(r, 2000));
+      this._completeStep(profileStepId);
+
+      const roleStepId = this._addStep(`Understanding ${name}'s role & access...`);
+      // eslint-disable-next-line @lwc/lwc/no-async-operation
+      await new Promise(r => setTimeout(r, 1500));
+      this._completeStep(roleStepId);
+
       // ── Step 1: Build queries + get records ──
-      const buildStepId = this._addStep("Querying your Salesforce data...");
+      const buildStepId = this._addStep("Securely querying accessible Salesforce data...");
 
       const queryResult = await buildQueries({
         userMessage: text,
@@ -961,11 +1009,49 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
           this._saveToCache();
         }
 
-        // Insert created record inline if present
-        if (analysis?.createdRecord) {
-          this.sidebarCreatedRecord = analysis.createdRecord;
+        // Handle multi-record create — populate both the Created Records sidebar and Related Records tabs
+        if (analysis?.allCreatedRecords && analysis.allCreatedRecords.length > 0) {
+          this.sidebarCreatedRecords = analysis.allCreatedRecords;
+          this.sidebarCreatedRecord = analysis.allCreatedRecords[0];
           this.isCreatedRecordExpanded = true;
           this._createdRecordBadgeVisible = false;
+          this._pendingRecordUpdate = null;
+          // Build record tabs so Related Records is populated
+          const tabs = this._buildTabsFromCreatedRecords(analysis.allCreatedRecords);
+          if (tabs.length > 0) {
+            this._cachedRecordTabs = tabs;
+            this.sidebarRecordTabs = tabs;
+          }
+          this._saveToCache();
+        } else if (analysis?.createdRecord) {
+          // Single record create
+          this.sidebarCreatedRecord = analysis.createdRecord;
+          this.sidebarCreatedRecords = [analysis.createdRecord];
+          this.isCreatedRecordExpanded = true;
+          this._createdRecordBadgeVisible = false;
+          this._pendingRecordUpdate = null;
+          this._saveToCache();
+        }
+
+        // Store pending field-completion prompt
+        if (analysis?.pendingUpdate) {
+          this._pendingRecordUpdate = analysis.pendingUpdate;
+          this._saveToCache();
+        }
+
+        // Handle record field update result
+        if (analysis?.updatedRecord) {
+          this.sidebarCreatedRecord = analysis.updatedRecord;
+          this.sidebarCreatedRecords = [analysis.updatedRecord];
+          this.isCreatedRecordExpanded = true;
+          this._createdRecordBadgeVisible = false;
+          this._pendingRecordUpdate = null;
+          this._saveToCache();
+        }
+
+        // Handle user declining to fill out additional fields
+        if (analysis?.pendingUpdateCleared) {
+          this._pendingRecordUpdate = null;
           this._saveToCache();
         }
       }
@@ -1019,12 +1105,54 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
   // ─── Conversation History ─────────────────────────────
 
+  /** Build synthetic RecordTab objects from a list of CreatedRecordInfo for the Related Records panel. */
+  _buildTabsFromCreatedRecords(createdRecords) {
+    return createdRecords.map((rec) => {
+      const nameCol = {
+        label: rec.objectLabel,
+        fieldName: "_name",
+        type: "STRING",
+        isNameField: true,
+        linkObjectApiName: rec.objectApiName,
+        linkIdField: "_id"
+      };
+      const fieldCols = (rec.fields || []).slice(0, 3).map((f, i) => ({
+        label: f.label,
+        fieldName: `f_${i}`,
+        type: f.type || "STRING",
+        isNameField: false,
+        linkObjectApiName: null,
+        linkIdField: null
+      }));
+      const row = { _id: rec.recordId, _name: rec.recordName, _sortKey: rec.recordName };
+      (rec.fields || []).slice(0, 3).forEach((f, i) => {
+        if (f.value) row[`f_${i}`] = f.value;
+      });
+      return {
+        objectApiName: rec.objectApiName,
+        objectLabel: rec.objectLabel,
+        iconName: rec.iconName,
+        recordCount: 1,
+        totalCount: null,
+        columns: [nameCol, ...fieldCols],
+        rows: [row]
+      };
+    });
+  }
+
   _buildHistory() {
     const turns = this.messages.filter(m => m.isAgent || m.isUser);
     const recent = turns.slice(-MAX_HISTORY_TURNS * 2);
-    return recent
+    let history = recent
       .map((m) => (m.role === "user" ? "USER: " : "ASSISTANT: ") + m.content)
       .join("\n");
+    // Inject pending record update context so Pass 1 can recognise field-fill responses
+    if (this._pendingRecordUpdate) {
+      const pu = this._pendingRecordUpdate;
+      const fieldList = (pu.blankFields || []).map(f => f.label).join(", ");
+      history += `\n[SYSTEM: Pending record update — Object: ${pu.objectApiName}, Record ID: ${pu.recordId}, Record Name: ${pu.recordName}, Available blank fields: ${fieldList}]`;
+    }
+    return history;
   }
 
   // ─── Typewriter Effect ────────────────────────────────

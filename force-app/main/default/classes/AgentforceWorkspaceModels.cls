@@ -11,12 +11,32 @@ public with sharing class AgentforceWorkspaceModels {
         @AuraEnabled public List<RecordTab> recordTabs;
         @AuraEnabled public Boolean forceRecordUpdate;
         @AuraEnabled public CreatedRecordInfo createdRecord;
+        @AuraEnabled public CreatedRecordInfo updatedRecord;
+        @AuraEnabled public List<CreatedRecordInfo> allCreatedRecords;
         @AuraEnabled public ChartData chartData;
+        @AuraEnabled public PendingUpdate pendingUpdate;
+        @AuraEnabled public Boolean pendingUpdateCleared;
         public ChatResult() {
             this.suggestions = new List<String>();
             this.recordTabs = new List<RecordTab>();
             this.forceRecordUpdate = false;
+            this.pendingUpdateCleared = false;
         }
+    }
+
+    /** Pending field-completion prompt surfaced after record creation. */
+    public class PendingUpdate {
+        @AuraEnabled public String recordId;
+        @AuraEnabled public String objectApiName;
+        @AuraEnabled public String recordName;
+        @AuraEnabled public List<FieldPromptItem> blankFields;
+        public PendingUpdate() { this.blankFields = new List<FieldPromptItem>(); }
+    }
+
+    /** A single blank field offered to the user for follow-up completion. */
+    public class FieldPromptItem {
+        @AuraEnabled public String apiName;
+        @AuraEnabled public String label;
     }
 
     /** Chart data chosen by the LLM from the analysis results. */

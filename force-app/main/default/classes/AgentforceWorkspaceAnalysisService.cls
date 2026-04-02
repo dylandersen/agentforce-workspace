@@ -28,16 +28,37 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('10. Prefer ORDER BY on relevant fields (e.g., CloseDate, Amount, CreatedDate).\n');
         parts.add('11. Do NOT use SOQL reserved words as aliases.\n');
         parts.add('12. For Opportunity stages use the exact stage names from the schema.\n');
+        parts.add('12b. OBJECT RESOLUTION FROM NATURAL LANGUAGE: When the user mentions a business noun (for example, "invoice", "contract", "ticket"), resolve it to the most likely Salesforce object using the schema below.\n');
+        parts.add('    - Use BOTH object label similarity and API name similarity.\n');
+        parts.add('    - Treat singular/plural as equivalent (invoice/invoices).\n');
+        parts.add('    - Prefer an object whose label or API name contains the keyword token(s).\n');
+        parts.add('    - If there is a SINGLE clear match in the schema, use that object directly.\n');
+        parts.add('    - If multiple objects plausibly match, choose the best semantic fit based on requested fields/date filters and include a second query for the next-best match only if needed to disambiguate.\n');
+        parts.add('    - Never invent object names; only use objects present in the provided schema.\n');
         parts.add('13. CRITICAL: NEVER use OR with subqueries. If you need records matching EITHER condition, generate TWO separate queries.\n');
+        parts.add('13b. CROSS-OBJECT NAME LOOKUPS: When querying Contacts, Opportunities, Cases, or other child records "at" or "for" a specific account mentioned by name, ALWAYS use an AccountId subquery with LIKE instead of matching Account.Name directly. Account names often contain abbreviations, suffixes, or parentheticals (e.g., "Pacific Distribution Centers (PDC)"). Direct Account.Name matching will fail.\n');
+        parts.add('    CORRECT: SELECT ... FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%PDC%\') LIMIT 200\n');
+        parts.add('    WRONG:   SELECT ... FROM Contact WHERE Account.Name = \'PDC\' LIMIT 200\n');
+        parts.add('    WRONG:   SELECT ... FROM Contact WHERE Account.Name = \'Pacific Distribution Centers\' LIMIT 200\n');
+        parts.add('    This pattern works for any child object with AccountId. For objects without AccountId, use the relationship field with LIKE: e.g., Account.Name LIKE \'%keyword%\'.\n');
         parts.add('14. ALWAYS PAIR detail queries with aggregate counts: for EVERY detail SELECT, also generate a matching COUNT() query with the same WHERE clause. Put the COUNT query FIRST. For grouped aggregates, a separate COUNT is not needed.\n');
         parts.add('15. If the user wants to CREATE, ADD, LOG, or MAKE a new record (including log a call, log a task, schedule an event/meeting), do NOT generate queries. Output a create action JSON instead.\n');
-        parts.add('16. Record creation is supported for: Account, Task, Event. "Log a call" = Task with TaskSubtype=Call. "Log a task" = Task. "Schedule a meeting/event" = Event.\n');
+        parts.add('15b. CRITICAL DISTINCTION — "draft/write/summarize/compose" vs "create/log a task": When the user (or conversation context) says "draft a summary", "write an email", "compose a message", "summarize findings", or agrees (e.g. "yes") to a suggestion involving drafting/writing/summarizing — this is a REQUEST TO GENERATE TEXT CONTENT, NOT a record creation. You must generate SOQL queries to fetch the relevant data so Pass 2 can compose the content. NEVER create a Task record for these requests. Only create Task/Event records when the user explicitly says "log a task", "create a task", "add a reminder", "schedule a meeting", etc.\n');
+        parts.add('15c. EMAIL RECIPIENT LOOKUP — When the user asks to draft an email to a "decision maker", "key contact", "executive", "CEO", or similar at an account, you MUST query Contacts for that account. Include these two queries: (1) a prioritised executive query: SELECT Id, Name, Title, Email FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%keyword%\') AND Title != null ORDER BY Title LIMIT 50, and (2) a fallback all-contacts query: SELECT Id, Name, Title, Email FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%keyword%\') ORDER BY LastModifiedDate DESC LIMIT 20. Pass 2 will choose the best recipient from the results.\n');
+        parts.add('16. Record creation is supported for: Account, Contact, Case, Lead, Opportunity, Task, Event. "Log a call" = Task with TaskSubtype=Call. "Log a task" = Task. "Schedule a meeting/event" = Event.\n');
         parts.add('17. For a NEW create request where not enough info is provided: {"action":"create","objectApiName":"Task","fields":{"Subject":"value"}} — include any fields the user already mentioned.\n');
         parts.add('18. When the user provides enough info to create the record (contact name, account name, subject, etc.) OR confirms a pending create: output {"action":"create_execute",...} directly. For Task/Event creates, if the user mentions a contact or account BY NAME, put the NAME in WhoId/WhatId — the system will resolve it to an ID automatically. Example: {"action":"create_execute","objectApiName":"Task","fields":{"Subject":"Call: Public Works Discussion","TaskSubtype":"Call","Status":"Completed","ActivityDate":"2026-03-16","WhoId":"David Kim","WhatId":"City of Irvine"}}.\n');
         parts.add('19. Account creatable fields: Name (required), Industry (picklist), Type (picklist: Prospect|Customer - Direct|Customer - Channel|Channel Partner / Reseller|Technology Partner|Other), Phone, Website, BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry, Description, NumberOfEmployees (integer), AnnualRevenue (currency number only, no $ sign).\n');
         parts.add('19b. Task creatable fields: Subject (required), Status (default "Completed" for logged calls/tasks, "Not Started" for future tasks), Priority (High|Normal|Low, default Normal), ActivityDate (date YYYY-MM-DD, default today for logged calls), Description, WhoId (Contact/Lead NAME or ID), WhatId (Account/Opportunity NAME or ID), TaskSubtype (set to "Call" for calls, "Task" for tasks, "Email" for emails). For logging calls/tasks, ALWAYS set Status="Completed" and ActivityDate to today. For future tasks, set Status="Not Started".\n');
         parts.add('19c. Event creatable fields: Subject (required), StartDateTime (ISO 8601), EndDateTime (ISO 8601), Location, Description, WhoId (Contact/Lead NAME or ID), WhatId (Account/Opportunity NAME or ID). Default meeting duration is 30 minutes if not specified.\n');
         parts.add('19d. CRITICAL: When the user says "log a call/task" or "schedule a meeting" and provides enough context (who, what account), output "create_execute" IMMEDIATELY — do NOT generate lookup queries. Put contact/account NAMES directly in WhoId/WhatId fields. The system resolves names to IDs automatically. Only use "create" (without _execute) if the user hasn\'t provided a subject or you need to ask what the call/meeting was about.\n');
+        parts.add('19e. NEVER interpret "draft", "write", "compose", "summarize", or "prepare" as record creation. These are content generation requests. When a user says "yes" to "Should I draft a summary..." or "Want me to write an email...", query the relevant data (activities, cases, contacts for the mentioned person/account) and let the analysis pass compose the content.\n');
+        parts.add('19f. Contact creatable fields: LastName (required), FirstName, AccountId (company NAME — system resolves to ID automatically), Email, Phone, MobilePhone, Title, Department, MailingCity, MailingState, MailingCountry, Description, LeadSource. Parse names naturally — "Stanley Stevens" → FirstName:"Stanley" LastName:"Stevens", "Mary Jane Watson" → FirstName:"Mary Jane" LastName:"Watson". Never duplicate the full name in both fields.\n');
+        parts.add('19g. Case creatable fields: Subject (required), Status (default "New"), Priority (default "Medium"; use High|Medium|Low), Origin (Phone|Email|Web), Type, Description, AccountId (company NAME — system resolves to ID), ContactId (contact NAME — system resolves to ID). Include enough info to output create_execute directly when Subject is known.\n');
+        parts.add('19h. Lead creatable fields: LastName (required), Company (required), FirstName, Email, Phone, MobilePhone, Title, Industry, Status (default "Open - Not Contacted"), LeadSource, Description, City, State, Country. Same name parsing rule as 19f.\n');
+        parts.add('19i. Opportunity creatable fields: Name (required), StageName (required — use a valid stage from the schema below), CloseDate (required — YYYY-MM-DD), AccountId (account NAME — system resolves to ID), Amount (numeric only, no $ sign), Probability (0-100), NextStep, Description, Type, LeadSource.\n');
+        parts.add('22. PENDING RECORD UPDATE — When the conversation history contains a line "[SYSTEM: Pending record update — Object: X, Record ID: xxx, Record Name: Y, Available blank fields: F1, F2, ...]" and the user\'s current message provides values for one or more of those fields, output: {"action":"update_execute","recordId":"xxx","objectApiName":"X","fields":{"FieldApiName":"value"}}. Use only field API names (e.g. Phone, Website, Amount). Include ONLY the fields the user actually mentioned. If the user declines (says "no", "skip", "looks good", "that\'s fine", "not now", or otherwise passes), output: {"action":"update_cancel"}.\n');
+        parts.add('23. MULTIPLE RECORD CREATES IN ONE MESSAGE — When the user asks to create MORE THAN ONE record in a single message (e.g. "create an account called Acme AND a contact on it for Jane Smith"), output a multi-action JSON: {"actions":[{"action":"create_execute","objectApiName":"Account","fields":{...}},{"action":"create_execute","objectApiName":"Contact","fields":{"AccountId":"Acme",...}}]}. Rules: (a) Always order parent records first (Account before Contact/Case/Opportunity). (b) In the child record\'s reference field, put the PARENT\'S NAME (not ID) — the system creates the parent first and the name-to-ID lookup will find it automatically. (c) Use this format whenever the user mentions AND, ALSO, PLUS, or multiple objects being created. (d) If one of the creates needs more info, use "create" instead of "create_execute" for that step only.\n');
         parts.add('20. MEETINGS/EVENTS → ACCOUNTS → CASES PATTERN: When the question involves meetings/events AND their related Accounts or Cases, you MUST generate separate Account and Case queries using SOQL subquery joins via Event.WhatId. SOQL supports this pattern:\n');
         parts.add('    - Accounts from meetings: SELECT Id, Name, Industry, Type, Phone FROM Account WHERE Id IN (SELECT WhatId FROM Event WHERE OwnerId = \'' + userId + '\' AND ActivityDate = THIS_WEEK) LIMIT 200\n');
         parts.add('    - Cases for meeting accounts: SELECT Id, CaseNumber, Subject, Status, Priority, AccountId FROM Case WHERE AccountId IN (SELECT WhatId FROM Event WHERE OwnerId = \'' + userId + '\' AND ActivityDate = THIS_WEEK) AND IsClosed = false ORDER BY CreatedDate DESC LIMIT 200\n');
@@ -68,6 +89,13 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('For log a call (enough context): {"action":"create_execute","objectApiName":"Task","fields":{"Subject":"Call: Public Works Discussion","TaskSubtype":"Call","Status":"Completed","ActivityDate":"' + String.valueOf(Date.today()) + '","WhoId":"David Kim","WhatId":"City of Irvine"}}\n');
         parts.add('For log a call (need more info): {"action":"create","objectApiName":"Task","fields":{"Subject":"Call with David Kim","TaskSubtype":"Call"}}\n');
         parts.add('For schedule event: {"action":"create_execute","objectApiName":"Event","fields":{"Subject":"Meeting with David Kim","WhoId":"David Kim","WhatId":"City of Irvine","StartDateTime":"2026-03-17T10:00:00","EndDateTime":"2026-03-17T10:30:00"}}\n');
+        parts.add('For create contact: {"action":"create_execute","objectApiName":"Contact","fields":{"FirstName":"Jane","LastName":"Smith","AccountId":"Acme Corp","Email":"jane.smith@acme.com","Title":"VP Sales"}}\n');
+        parts.add('For create case: {"action":"create_execute","objectApiName":"Case","fields":{"Subject":"Login page not loading","Status":"New","Priority":"High","Origin":"Email","AccountId":"Acme Corp"}}\n');
+        parts.add('For create lead: {"action":"create_execute","objectApiName":"Lead","fields":{"FirstName":"Bob","LastName":"Jones","Company":"StartupCo","Email":"bob@startup.co","Title":"CEO"}}\n');
+        parts.add('For create opportunity: {"action":"create_execute","objectApiName":"Opportunity","fields":{"Name":"StartupCo - Enterprise Deal","StageName":"Qualification","CloseDate":"2026-06-30","AccountId":"StartupCo","Amount":50000}}\n');
+        parts.add('For updating fields on a pending record: {"action":"update_execute","recordId":"001Hu0000XXXXX","objectApiName":"Account","fields":{"Phone":"555-1234","Website":"https://www.example.com"}}\n');
+        parts.add('For declining a pending field update: {"action":"update_cancel"}\n');
+        parts.add('For creating MULTIPLE records in one message: {"actions":[{"action":"create_execute","objectApiName":"Account","fields":{"Name":"Scott\'s Scooters","Type":"Other","BillingStreet":"123 Main Street","BillingCity":"Irvine","BillingState":"CA","BillingPostalCode":"92618"}},{"action":"create_execute","objectApiName":"Contact","fields":{"FirstName":"Scott","LastName":"Hendrix","Title":"CEO","Phone":"714-123-1234","Email":"scott@scottsscooters.com","AccountId":"Scott\'s Scooters"}}]}\n');
         parts.add('Use SOQL (SELECT) for most queries. Use SOSL (FIND) only for Incident/Problem/Case when you need to search Description (long text).\n');
 
         return String.join(parts, '');
@@ -123,7 +151,15 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('- Keep bullet points concise — 1 line each\n');
         parts.add('- **PREFER <table> for comparisons and grouped data.** When the data has 3+ items with shared dimensions (e.g., stages, types, reps, time periods), present it as a clean HTML table with <thead> and <tbody>. Tables are far easier to scan than bullet lists for numeric comparisons. Use <b> on standout values (highest, lowest, growth %). Example: stage breakdown, rep leaderboard, monthly trend, type comparison.\n');
         String fullName = String.isNotBlank(data.userFullName) ? data.userFullName : data.userName;
-        parts.add('- **DRAFTED EMAILS:** When the user asks to draft an email, (1) add <p></p> before and after the email block to create extra line breaks and visual separation from surrounding content, (2) wrap the entire email in <blockquote>, and (3) use proper paragraphing: separate To, Subject, salutation, each body paragraph, and sign-off into their own <p> tags. (4) ALWAYS sign the email with the running user\'s full name: ' + fullName + '. NEVER use "[Your Name]" — always use ' + fullName + '. Example: <p></p><blockquote><p><b>To:</b> Catherine Powell, CEO</p><p><b>Subject:</b> Next Steps</p><p>Hi Catherine,</p><p>Thank you for the conversation...</p><p>Would you have 30 minutes this week?</p><p>Best,</p><p>' + fullName + '</p></blockquote><p></p>. Never run the entire email as one continuous block — use <p></p> between each logical paragraph.\n\n');
+        parts.add('- **EMAIL DRAFTS — RECIPIENT SELECTION:** When drafting an email, ALWAYS select a real contact from the QUERY RESULTS. Follow this priority order:\n');
+        parts.add('  (1) CEO, President, Chief * Officer (C-suite)\n');
+        parts.add('  (2) VP, Vice President, SVP, EVP\n');
+        parts.add('  (3) Director, Managing Director\n');
+        parts.add('  (4) Manager, Head of, Lead\n');
+        parts.add('  (5) Any contact with a non-blank Email field\n');
+        parts.add('  (6) If NO contacts exist in the data at all, use the account name with a placeholder email and explain in the intro that no contacts were found.\n');
+        parts.add('  RULES: NEVER invent a name like "Decision Maker" or "Key Contact". Use the EXACT Name and Email from the query results. If the chosen contact has no Email, write their name but note the email is missing. If you picked someone who is NOT obviously a decision maker, add one sentence in your intro explaining why (e.g. "I couldn\'t find a C-suite contact, so I\'ve addressed this to [Name], [Title], who is the most senior contact on record.").\n');
+        parts.add('- **EMAIL DRAFT FORMAT:** Include the full email directly in your HTML response inside a <blockquote> element. Add a brief intro sentence (including any recipient-selection explanation), then output: <blockquote><p><b>To:</b> [Real Name from data] &lt;[real.email@company.com from data]&gt;</p><p><b>Subject:</b> Subject Line</p><p>Hi [First name],</p><p>[Body paragraph]</p><p>Best regards,<br>' + fullName + '</p></blockquote>. Sign with ' + fullName + '. NEVER use "[Your Name]". Skip the CHART block for email drafts. Still include SUGGESTIONS.\n');
 
         // Inject record link table so the LLM can embed clickable links
         if (data.recordLinks != null && !data.recordLinks.isEmpty()) {
@@ -368,5 +404,20 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         }
 
         return suggestions;
+    }
+
+    /** Convert plain text email body (with \n) to HTML paragraphs. */
+    private static String convertPlainTextBodyToHtml(String body) {
+        if (String.isBlank(body)) return '';
+        if (body.contains('<p>') || body.contains('<br')) return body;
+        List<String> paragraphs = body.split('\\n\\n');
+        String html = '';
+        for (String p : paragraphs) {
+            String trimmed = p.trim();
+            if (String.isNotBlank(trimmed)) {
+                html += '<p>' + trimmed.replace('\n', '<br/>') + '</p>';
+            }
+        }
+        return String.isNotBlank(html) ? html : '<p>' + body + '</p>';
     }
 }

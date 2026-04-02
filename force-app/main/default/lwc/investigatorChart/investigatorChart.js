@@ -10,16 +10,14 @@ const Y_LINES = 5;
 
 export default class InvestigatorChart extends LightningElement {
   @api chartData;
+  @api hideExpand = false;
+
+  get showExpandBtn() {
+    return !this.hideExpand;
+  }
 
   get hasData() {
     return this.chartData && this.chartData.items && this.chartData.items.length > 0;
-  }
-
-  get chartTypeBadge() {
-    const t = this.chartData?.chartType;
-    if (t === 'donut') return 'Distribution';
-    if (t === 'horizontalBar') return 'Ranking';
-    return 'Comparison';
   }
 
   get isBarChart() {
@@ -123,6 +121,19 @@ export default class InvestigatorChart extends LightningElement {
     const prefix = this.chartData?.valuePrefix || '';
     const suffix = this.chartData?.valueSuffix || '';
     return prefix + this._formatNumber(this.totalValue) + suffix;
+  }
+
+  // ── Chart actions ──
+
+  handleCycleType() {
+    const order = ['horizontalBar', 'bar', 'donut'];
+    const current = this.chartData?.chartType || 'horizontalBar';
+    const next = order[(order.indexOf(current) + 1) % order.length];
+    this.dispatchEvent(new CustomEvent('cyclechart', { detail: { chartType: next } }));
+  }
+
+  handleExpand() {
+    this.dispatchEvent(new CustomEvent('expandchart'));
   }
 
   // ── Helpers ──

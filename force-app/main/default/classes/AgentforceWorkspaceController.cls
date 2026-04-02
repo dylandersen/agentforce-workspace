@@ -28,19 +28,27 @@ public with sharing class AgentforceWorkspaceController {
             }
 
             // --- Pass 1: NL to SOQL ---
-            String schemaContext = BusinessIntelligence.buildSchemaContext();
+            String schemaContext = BusinessIntelligence.buildSchemaContext(userMessage);
             String nlToSoqlPrompt = AgentforceWorkspaceAnalysisService.buildNLtoSOQLPrompt(
                 userMessage, conversationHistory, userId, userName, schemaContext);
             String soqlResponse = AgentforceWorkspaceAnalysisService.callModelsAPI(nlToSoqlPrompt, resolvedModel);
 
-            // Check for record creation action before SOQL parsing
+            // Check for record creation/update action before SOQL parsing
             Map<String, Object> createAction = AgentforceWorkspaceRecordCreator.parseCreateAction(soqlResponse);
             if (createAction != null) {
+                // Multi-record create (e.g. "create an account AND a contact on it")
+                if (createAction.containsKey('actions')) {
+                    return AgentforceWorkspaceRecordCreator.handleMultiCreateExecute(createAction, userName, resolvedModel);
+                }
                 String action = (String) createAction.get('action');
                 if (action == 'create') {
                     return AgentforceWorkspaceRecordCreator.handleCreateConfirm(createAction, userName, resolvedModel);
                 } else if (action == 'create_execute') {
                     return AgentforceWorkspaceRecordCreator.handleCreateExecute(createAction, userName, resolvedModel);
+                } else if (action == 'update_execute') {
+                    return AgentforceWorkspaceRecordCreator.handleUpdateExecute(createAction, userName);
+                } else if (action == 'update_cancel') {
+                    return AgentforceWorkspaceRecordCreator.handleUpdateCancel(userName);
                 }
             }
 
@@ -114,8 +122,20 @@ public with sharing class AgentforceWorkspaceController {
                 data, userMessage, conversationHistory);
             String rawResponse = AgentforceWorkspaceAnalysisService.callModelsAPI(analysisPrompt, resolvedModel);
 
-            // Inject links only into the HTML portion (before CHART/SUGGESTIONS blocks)
+            // Protect EMAIL_DRAFT block from link injection (JSON would break)
+            String emailDraftBlock = '';
+            Integer edStart = rawResponse.indexOf('<EMAIL_DRAFT>');
+            Integer edEnd = rawResponse.indexOf('</EMAIL_DRAFT>');
+            if (edStart != -1 && edEnd != -1 && edEnd > edStart) {
+                emailDraftBlock = rawResponse.substring(edStart, edEnd + 14);
+                rawResponse = rawResponse.substring(0, edStart)
+                    + '___EMAIL_DRAFT_PLACEHOLDER___'
+                    + rawResponse.substring(edEnd + 14);
+            }
             rawResponse = AgentforceWorkspaceLinkService.safeInjectRecordLinks(rawResponse, recordLinks);
+            if (String.isNotBlank(emailDraftBlock)) {
+                rawResponse = rawResponse.replace('___EMAIL_DRAFT_PLACEHOLDER___', emailDraftBlock);
+            }
 
             // Build record tabs for the list view (core CRM objects only)
             List<AgentforceWorkspaceModels.RecordTab> recordTabs =
@@ -157,7 +177,7 @@ public with sharing class AgentforceWorkspaceController {
             String userFullName = UserInfo.getName();
 
             // --- Pass 1: NL to SOQL ---
-            String schemaContext = BusinessIntelligence.buildSchemaContext();
+            String schemaContext = BusinessIntelligence.buildSchemaContext(userMessage);
             String nlToSoqlPrompt = AgentforceWorkspaceAnalysisService.buildNLtoSOQLPrompt(
                 userMessage, conversationHistory, userId, userName, schemaContext);
             String soqlResponse = AgentforceWorkspaceAnalysisService.callModelsAPI(nlToSoqlPrompt, resolvedModel);
@@ -176,9 +196,21 @@ public with sharing class AgentforceWorkspaceController {
                 return result;
             }
 
-            // Check for record creation action
+            // Check for record creation/update action
             Map<String, Object> createAction = AgentforceWorkspaceRecordCreator.parseCreateAction(soqlResponse);
             if (createAction != null) {
+                // Multi-record create
+                if (createAction.containsKey('actions')) {
+                    AgentforceWorkspaceModels.ChatResult cr =
+                        AgentforceWorkspaceRecordCreator.handleMultiCreateExecute(createAction, userName, resolvedModel);
+                    result.executionDataJson = JSON.serialize(new Map<String, Object>{
+                        'isCreateResult' => true,
+                        'chatResult' => cr
+                    });
+                    result.querySummary = 'Creating records...';
+                    result.hasResults = true;
+                    return result;
+                }
                 String action = (String) createAction.get('action');
                 if (action == 'create') {
                     AgentforceWorkspaceModels.ChatResult cr =
@@ -198,6 +230,25 @@ public with sharing class AgentforceWorkspaceController {
                     });
                     result.querySummary = 'Creating record...';
                     result.hasResults = true;
+                    return result;
+                } else if (action == 'update_execute') {
+                    AgentforceWorkspaceModels.ChatResult cr =
+                        AgentforceWorkspaceRecordCreator.handleUpdateExecute(createAction, userName);
+                    result.executionDataJson = JSON.serialize(new Map<String, Object>{
+                        'isCreateResult' => true,
+                        'chatResult' => cr
+                    });
+                    result.querySummary = 'Updating record...';
+                    result.hasResults = true;
+                    return result;
+                } else if (action == 'update_cancel') {
+                    AgentforceWorkspaceModels.ChatResult cr =
+                        AgentforceWorkspaceRecordCreator.handleUpdateCancel(userName);
+                    result.executionDataJson = JSON.serialize(new Map<String, Object>{
+                        'isCreateResult' => true,
+                        'chatResult' => cr
+                    });
+                    result.querySummary = 'Got it!';
                     return result;
                 }
             }
@@ -339,26 +390,40 @@ public with sharing class AgentforceWorkspaceController {
                 }
                 // Deserialize createdRecord info for the frontend card
                 if (crMap.containsKey('createdRecord') && crMap.get('createdRecord') != null) {
-                    Map<String, Object> recMap = (Map<String, Object>) crMap.get('createdRecord');
-                    AgentforceWorkspaceModels.CreatedRecordInfo info = new AgentforceWorkspaceModels.CreatedRecordInfo();
-                    info.objectApiName = (String) recMap.get('objectApiName');
-                    info.objectLabel = (String) recMap.get('objectLabel');
-                    info.iconName = (String) recMap.get('iconName');
-                    info.recordId = (String) recMap.get('recordId');
-                    info.recordName = (String) recMap.get('recordName');
-                    info.recordUrl = (String) recMap.get('recordUrl');
-                    if (recMap.containsKey('fields') && recMap.get('fields') != null) {
-                        for (Object fObj : (List<Object>) recMap.get('fields')) {
-                            Map<String, Object> fMap = (Map<String, Object>) fObj;
-                            AgentforceWorkspaceModels.RecordField rf = new AgentforceWorkspaceModels.RecordField();
-                            rf.label = (String) fMap.get('label');
-                            rf.value = (String) fMap.get('value');
-                            rf.type = (String) fMap.get('type');
-                            info.fields.add(rf);
+                    cr.createdRecord = deserializeCreatedRecordInfo((Map<String, Object>) crMap.get('createdRecord'));
+                }
+                // Deserialize all created records for multi-create
+                if (crMap.containsKey('allCreatedRecords') && crMap.get('allCreatedRecords') != null) {
+                    List<AgentforceWorkspaceModels.CreatedRecordInfo> allRecs = new List<AgentforceWorkspaceModels.CreatedRecordInfo>();
+                    for (Object recObj : (List<Object>) crMap.get('allCreatedRecords')) {
+                        allRecs.add(deserializeCreatedRecordInfo((Map<String, Object>) recObj));
+                    }
+                    cr.allCreatedRecords = allRecs;
+                }
+                // Deserialize updatedRecord info
+                if (crMap.containsKey('updatedRecord') && crMap.get('updatedRecord') != null) {
+                    cr.updatedRecord = deserializeCreatedRecordInfo((Map<String, Object>) crMap.get('updatedRecord'));
+                }
+                // Deserialize pending update prompt
+                if (crMap.containsKey('pendingUpdate') && crMap.get('pendingUpdate') != null) {
+                    Map<String, Object> puMap = (Map<String, Object>) crMap.get('pendingUpdate');
+                    AgentforceWorkspaceModels.PendingUpdate pu = new AgentforceWorkspaceModels.PendingUpdate();
+                    pu.recordId = (String) puMap.get('recordId');
+                    pu.objectApiName = (String) puMap.get('objectApiName');
+                    pu.recordName = (String) puMap.get('recordName');
+                    if (puMap.containsKey('blankFields') && puMap.get('blankFields') != null) {
+                        for (Object fpObj : (List<Object>) puMap.get('blankFields')) {
+                            Map<String, Object> fpMap = (Map<String, Object>) fpObj;
+                            AgentforceWorkspaceModels.FieldPromptItem fp = new AgentforceWorkspaceModels.FieldPromptItem();
+                            fp.apiName = (String) fpMap.get('apiName');
+                            fp.label = (String) fpMap.get('label');
+                            pu.blankFields.add(fp);
                         }
                     }
-                    cr.createdRecord = info;
+                    cr.pendingUpdate = pu;
                 }
+                cr.pendingUpdateCleared = crMap.containsKey('pendingUpdateCleared')
+                    && crMap.get('pendingUpdateCleared') == true;
                 return cr;
             }
 
@@ -387,8 +452,20 @@ public with sharing class AgentforceWorkspaceController {
                 data, userMessage, conversationHistory);
             String rawResponse = AgentforceWorkspaceAnalysisService.callModelsAPI(analysisPrompt, resolvedModel);
 
-            // Inject links only into the HTML portion (before CHART/SUGGESTIONS blocks)
+            // Protect EMAIL_DRAFT block from link injection (JSON would break)
+            String emailDraftBlock2 = '';
+            Integer edStart2 = rawResponse.indexOf('<EMAIL_DRAFT>');
+            Integer edEnd2 = rawResponse.indexOf('</EMAIL_DRAFT>');
+            if (edStart2 != -1 && edEnd2 != -1 && edEnd2 > edStart2) {
+                emailDraftBlock2 = rawResponse.substring(edStart2, edEnd2 + 14);
+                rawResponse = rawResponse.substring(0, edStart2)
+                    + '___EMAIL_DRAFT_PLACEHOLDER___'
+                    + rawResponse.substring(edEnd2 + 14);
+            }
             rawResponse = AgentforceWorkspaceLinkService.safeInjectRecordLinks(rawResponse, data.recordLinks);
+            if (String.isNotBlank(emailDraftBlock2)) {
+                rawResponse = rawResponse.replace('___EMAIL_DRAFT_PLACEHOLDER___', emailDraftBlock2);
+            }
 
             return AgentforceWorkspaceAnalysisService.parseSuggestions(rawResponse);
 
@@ -416,5 +493,27 @@ public with sharing class AgentforceWorkspaceController {
     public static String getUserPhotoUrl() {
         List<User> users = [SELECT SmallPhotoUrl FROM User WHERE Id = :UserInfo.getUserId() LIMIT 1];
         return users.isEmpty() ? null : users[0].SmallPhotoUrl;
+    }
+
+    /** Shared helper to deserialize a CreatedRecordInfo from a JSON map. */
+    private static AgentforceWorkspaceModels.CreatedRecordInfo deserializeCreatedRecordInfo(Map<String, Object> recMap) {
+        AgentforceWorkspaceModels.CreatedRecordInfo info = new AgentforceWorkspaceModels.CreatedRecordInfo();
+        info.objectApiName = (String) recMap.get('objectApiName');
+        info.objectLabel = (String) recMap.get('objectLabel');
+        info.iconName = (String) recMap.get('iconName');
+        info.recordId = (String) recMap.get('recordId');
+        info.recordName = (String) recMap.get('recordName');
+        info.recordUrl = (String) recMap.get('recordUrl');
+        if (recMap.containsKey('fields') && recMap.get('fields') != null) {
+            for (Object fObj : (List<Object>) recMap.get('fields')) {
+                Map<String, Object> fMap = (Map<String, Object>) fObj;
+                AgentforceWorkspaceModels.RecordField rf = new AgentforceWorkspaceModels.RecordField();
+                rf.label = (String) fMap.get('label');
+                rf.value = (String) fMap.get('value');
+                rf.type = (String) fMap.get('type');
+                info.fields.add(rf);
+            }
+        }
+        return info;
     }
 }

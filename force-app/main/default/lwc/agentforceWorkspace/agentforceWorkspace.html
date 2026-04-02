@@ -366,7 +366,7 @@
                     </template>
                   </div>
 
-                  <!-- Created Record Section -->
+                  <!-- Created Record(s) Section -->
                   <template lwc:if={hasSidebarCreatedRecord}>
                     <div class="sidebar-section collapsible-section">
                       <div class="collapsible-header" onclick={handleToggleCreatedRecord} role="button" tabindex="0">
@@ -382,7 +382,9 @@
                       </div>
                       <template lwc:if={isCreatedRecordExpanded}>
                         <div class="collapsible-body">
-                          <c-investigator-created-record created-record={sidebarCreatedRecord} onviewrecord={handleViewRecord}></c-investigator-created-record>
+                          <template for:each={sidebarCreatedRecordsKeyed} for:item="createdRec">
+                            <c-investigator-created-record key={createdRec._key} created-record={createdRec} onviewrecord={handleViewRecord}></c-investigator-created-record>
+                          </template>
                         </div>
                       </template>
                     </div>
@@ -405,7 +407,7 @@
                       <div class="collapsible-body">
                         <template lwc:if={hasSidebarChart}>
                           <div class="sidebar-chart-wrap">
-                            <c-investigator-chart chart-data={sidebarChartData}></c-investigator-chart>
+                            <c-investigator-chart chart-data={sidebarChartData} oncyclechart={handleCycleChartType} onexpandchart={handleExpandChart}></c-investigator-chart>
                           </div>
                         </template>
                         <template lwc:if={noSidebarChart}>
@@ -415,32 +417,29 @@
                     </template>
                   </div>
 
-                  <!-- Map Section (collapsed by default, badge when addresses arrive) -->
-                  <div class="sidebar-section collapsible-section">
-                    <div class="collapsible-header" onclick={handleToggleMap} role="button" tabindex="0">
-                      <span class="sidebar-section-title">Map</span>
-                      <div class="collapsible-header-right">
-                        <template lwc:if={showMapBadge}>
-                          <span class="notify-badge"></span>
-                        </template>
-                        <svg viewBox="0 0 16 16" fill="none" class={mapChevronClass} aria-hidden="true">
-                          <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
+                  <!-- Map Section (only shown when map addresses exist) -->
+                  <template lwc:if={hasMapAddresses}>
+                    <div class="sidebar-section collapsible-section">
+                      <div class="collapsible-header" onclick={handleToggleMap} role="button" tabindex="0">
+                        <span class="sidebar-section-title">Map</span>
+                        <div class="collapsible-header-right">
+                          <template lwc:if={showMapBadge}>
+                            <span class="notify-badge"></span>
+                          </template>
+                          <svg viewBox="0 0 16 16" fill="none" class={mapChevronClass} aria-hidden="true">
+                            <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                        </div>
                       </div>
-                    </div>
-                    <template lwc:if={isMapExpanded}>
-                      <div class="collapsible-body">
-                        <template lwc:if={hasMapAddresses}>
+                      <template lwc:if={isMapExpanded}>
+                        <div class="collapsible-body">
                           <div class="sidebar-map-wrap">
                             <c-investigator-map-view addresses={mapAddresses}></c-investigator-map-view>
                           </div>
-                        </template>
-                        <template lwc:if={noMapAddresses}>
-                          <p class="steps-placeholder">Location pins will appear here when accounts or contacts with addresses are returned.</p>
-                        </template>
-                      </div>
-                    </template>
-                  </div>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
 
                   <!-- Usage Estimate Section (collapsible) -->
                   <div class="sidebar-section collapsible-section usage-section">
@@ -500,6 +499,24 @@
         </div>
         <div class="modal-body">
           <c-investigator-record-list record-tabs={sidebarRecordTabs}></c-investigator-record-list>
+        </div>
+      </div>
+    </template>
+
+    <!-- Chart Expanded Modal -->
+    <template lwc:if={isChartModalOpen}>
+      <div class="modal-backdrop" onclick={handleCloseChartModal}></div>
+      <div class="modal-container chart-modal">
+        <div class="modal-header">
+          <span class="modal-title">{sidebarChartData.title}</span>
+          <button class="details-action-btn" onclick={handleCloseChartModal} title="Close">
+            <svg viewBox="0 0 16 16" fill="none" class="details-action-icon">
+              <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <c-investigator-chart chart-data={sidebarChartData} oncyclechart={handleCycleChartType} onexpandchart={handleCloseChartModal} hide-expand></c-investigator-chart>
         </div>
       </div>
     </template>

@@ -7,7 +7,22 @@
           <lightning-icon icon-name="utility:chart" size="xx-small" class="chart-header-icon"></lightning-icon>
           <h3 class="chart-title">{chartData.title}</h3>
         </div>
-        <span class="chart-type-badge">{chartTypeBadge}</span>
+        <div class="chart-header-actions">
+          <button class="chart-action-btn" onclick={handleCycleType} title="Switch chart type">
+            <svg viewBox="0 0 16 16" fill="none" class="chart-action-icon" aria-hidden="true">
+              <path d="M1.5 8a6.5 6.5 0 0111.48-4.16M14.5 8a6.5 6.5 0 01-11.48 4.16" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <path d="M13.5 1v3h-3M2.5 15v-3h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <template lwc:if={showExpandBtn}>
+            <button class="chart-action-btn" onclick={handleExpand} title="Expand visualization">
+              <svg viewBox="0 0 16 16" fill="none" class="chart-action-icon" aria-hidden="true">
+                <path d="M9 2h5v5M7 14H2V9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M14 2L9 7M2 14l5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </template>
+        </div>
       </div>
 
       <!-- Bar Chart -->

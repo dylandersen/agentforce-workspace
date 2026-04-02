@@ -101,8 +101,14 @@
 /* ─── Map Container ──────────────────────────────── */
 
 .map-container {
-  height: 420px;
   position: relative;
+  overflow: hidden;
+  height: 320px;
+}
+
+.map-container lightning-map {
+  display: block;
+  height: 560px;
 }
 
 /* ─── Footer ─────────────────────────────────────── */
