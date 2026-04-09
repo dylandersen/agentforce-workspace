@@ -1,8 +1,8 @@
 # Agentforce Workspace
 
-Agentforce Workspace is a production-oriented conversational analytics surface for Salesforce. It combines Lightning Web Components, Apex orchestration, and the Salesforce Models API to turn natural language into secure data retrieval, structured record actions, and high-value analysis inside Lightning Experience.
+Agentforce Workspace is a production-oriented conversational analytics surface for Salesforce. It combines Lightning Web Components, Apex orchestration, and the Salesforce Models API to turn natural language into secure data retrieval, structured record actions, and high-value analysis inside LEX.
 
-This project is not a chat wrapper around SOQL. It is an attempt to build a serious reasoning interface for CRM and service operations: schema-aware, user-context-aware, resilient under ambiguity, and disciplined about how AI is allowed to interact with enterprise data.
+This project is an attempt to build a serious reasoning interface for CRM and service operations: schema-aware, user-context-aware, resilient under ambiguity, and disciplined about how AI is allowed to interact with enterprise data.
 
 ![Salesforce API v65.0](https://img.shields.io/badge/Salesforce%20API-v65.0-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green)
@@ -38,15 +38,15 @@ Agentforce Workspace is designed to address those failure modes directly. The go
 ```text
 +------------------+        +-----------------------------------+
 | Lightning UI     |        | Apex Orchestration Layer          |
-| agentforceWorkspace       | AgentforceWorkspaceController      |
+| agentforceWorkspace       | AgentforceWorkspaceController     |
 +---------+--------+        +----------------+------------------+
           |                                  |
           | user input                       |
           v                                  v
-          |                        +-----------------------------+
+          |                        +------------------------------+
           |                        | Pass 0: Intent Classification|
           |                        | Cheap model, fast decision   |
-          |                        +-------------+---------------+
+          |                        +-------------+----------------+
           |                                      |
           |                                      v
           |                        +-----------------------------+
@@ -137,7 +137,7 @@ That distinction is handled explicitly by `AgentforceWorkspaceReasoningEngine`, 
 
 ### 2. Recovery over brittleness
 
-Generated SOQL is fallible. The system is designed to recover from:
+Generated SOQL is fallible, so instead, this system is designed to recover from:
 
 - non-groupable fields in aggregate queries
 - invalid field or relationship references
@@ -156,7 +156,7 @@ Queries are executed as the running user and supplementary queries use `WITH USE
 
 ### 4. Structured UX, not opaque AI output
 
-The frontend does not merely dump model text into a chat bubble. It renders:
+The frontend renders:
 
 - progress stages
 - related record tabs
@@ -232,7 +232,7 @@ Intent classification
 
 ### Dynamic Error Diagnosis
 
-Earlier versions used a static retry hint list. The current reasoning loop sends the actual failure back to the model, including the failed SOQL and the platform error text.
+Earlier versions used a static retry hint list, so instead, the current reasoning loop sends the actual failure back to the model, including the failed SOQL and the platform error text.
 
 That allows the retry pass to reason about issues such as:
 
@@ -292,7 +292,7 @@ Details Panel
   +--> Usage Estimate
 ```
 
-The workspace now tracks action semantics explicitly. A successful update no longer renders as a creation event. Progress text has also been revised to better reflect real system states such as intent understanding and analysis preparation.
+The workspace now tracks action semantics explicitly. Progress text has also been revised to better reflect real system states such as intent understanding and analysis preparation.
 
 ## Result Handling and UX Semantics
 
@@ -447,6 +447,11 @@ Agentforce Workspace is best understood as a deep software systems project at th
 - controlled use of foundation models in enterprise workflows
 
 It demonstrates that advanced conversational software on Salesforce does not need to choose between ambition and discipline. With the right architecture, a Lightning application can reason about intent, retrieve data safely, adapt to model failure, and render operationally useful outcomes in a form that business users can trust.
+
+## Information about the Author
+
+Dylan Andersen is a Sr. Solution Engineer, Agentforce & Data 360 at Salesforce.
+There is no support provided for this project. Please contact him at dylan.andersen@salesforce.com with feedback, or submit a PR.
 
 ## License
 
