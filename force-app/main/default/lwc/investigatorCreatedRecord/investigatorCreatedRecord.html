@@ -7,11 +7,11 @@
           <div class="icon-ring">
             <lightning-icon icon-name={iconName} size="x-small" class="record-icon"></lightning-icon>
           </div>
-          <span class="header-title">Record Created</span>
+          <span class="header-title">{headerTitle}</span>
         </div>
         <span class="created-badge">
-          <lightning-icon icon-name="utility:check" size="xx-small" class="check-icon"></lightning-icon>
-          Success
+          <lightning-icon icon-name={badgeIconName} size="xx-small" class="check-icon"></lightning-icon>
+          {badgeLabel}
         </span>
       </div>
 

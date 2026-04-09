@@ -176,29 +176,35 @@ public with sharing class AgentforceWorkspaceController {
             }
             String userFullName = UserInfo.getName();
 
-            // --- Pass 1: NL to SOQL ---
-            String schemaContext = BusinessIntelligence.buildSchemaContext(userMessage);
-            String nlToSoqlPrompt = AgentforceWorkspaceAnalysisService.buildNLtoSOQLPrompt(
-                userMessage, conversationHistory, userId, userName, schemaContext);
-            String soqlResponse = AgentforceWorkspaceAnalysisService.callModelsAPI(nlToSoqlPrompt, resolvedModel);
+            // --- Reasoning Engine: Intent Classification + SOQL Generation Loop ---
+            AgentforceWorkspaceModels.ReasoningResult reasoning =
+                AgentforceWorkspaceReasoningEngine.reason(
+                    userMessage, conversationHistory, userId, userName, resolvedModel);
 
-            // Detect AI model errors returned as HTML
-            if (String.isBlank(soqlResponse) || soqlResponse.trim().startsWith('<p>Error')
-                    || soqlResponse.trim().startsWith('<p>Unexpected') || soqlResponse.trim().startsWith('<p>No response')) {
-                result.querySummary = 'The AI model couldn\'t process this request. Try rephrasing your question or switching models.';
-                AgentforceWorkspaceModels.ExecutionData ed = new AgentforceWorkspaceModels.ExecutionData();
-                ed.queryResultsText = '';
-                ed.recordLinks = new Map<String, List<String>>();
-                ed.userName = userName;
-                ed.userFullName = userFullName;
-                ed.hasAnyResults = false;
-                result.executionDataJson = JSON.serialize(new Map<String, Object>{ 'executionData' => ed });
+            // Surface intent understanding for the frontend
+            if (reasoning.classifiedIntent != null) {
+                result.intentLabel = reasoning.classifiedIntent.plan;
+            }
+            result.reasoningAttempts = reasoning.attemptsUsed;
+
+            // ── Handle: Clarification needed ──
+            if (!reasoning.success && reasoning.createAction == null
+                    && reasoning.classifiedIntent != null
+                    && reasoning.classifiedIntent.intent == 'CLARIFY') {
+                result.querySummary = reasoning.classifiedIntent.clarification;
+                result.executionDataJson = JSON.serialize(new Map<String, Object>{
+                    'isFailureExplanation' => true,
+                    'html' => reasoning.failureExplanation != null
+                        ? reasoning.failureExplanation : reasoning.classifiedIntent.clarification,
+                    'suggestions' => reasoning.alternativeSuggestions != null
+                        ? reasoning.alternativeSuggestions : new List<String>()
+                });
                 return result;
             }
 
-            // Check for record creation/update action
-            Map<String, Object> createAction = AgentforceWorkspaceRecordCreator.parseCreateAction(soqlResponse);
-            if (createAction != null) {
+            // ── Handle: Create/Update action detected ──
+            if (reasoning.createAction != null) {
+                Map<String, Object> createAction = reasoning.createAction;
                 // Multi-record create
                 if (createAction.containsKey('actions')) {
                     AgentforceWorkspaceModels.ChatResult cr =
@@ -253,53 +259,23 @@ public with sharing class AgentforceWorkspaceController {
                 }
             }
 
-            List<BusinessIntelligence.QueryPlan> plans = BusinessIntelligence.parseAndValidateSOQL(soqlResponse);
-
-            if (plans.isEmpty()) {
-                result.querySummary = 'I couldn\'t generate a valid query for that question.';
-                AgentforceWorkspaceModels.ExecutionData ed = new AgentforceWorkspaceModels.ExecutionData();
-                ed.queryResultsText = '';
-                ed.recordLinks = new Map<String, List<String>>();
-                ed.userName = userName;
-                ed.userFullName = userFullName;
-                ed.hasAnyResults = false;
-                result.executionDataJson = JSON.serialize(new Map<String, Object>{ 'executionData' => ed });
+            // ── Handle: Reasoning failed after all attempts ──
+            if (!reasoning.success || reasoning.executions == null || reasoning.executions.isEmpty()) {
+                result.querySummary = 'I had trouble processing that question.';
+                result.executionDataJson = JSON.serialize(new Map<String, Object>{
+                    'isFailureExplanation' => true,
+                    'html' => reasoning.failureExplanation != null
+                        ? reasoning.failureExplanation
+                        : '<p>I couldn\'t process that question. Try rephrasing.</p>',
+                    'suggestions' => reasoning.alternativeSuggestions != null
+                        ? reasoning.alternativeSuggestions
+                        : new List<String>{ 'Show my pipeline', 'List my accounts' }
+                });
                 return result;
             }
 
-            // --- Execute validated queries ---
-            List<BusinessIntelligence.QueryExecution> executions = BusinessIntelligence.executeQueries(plans);
-
-            // --- Retry if ALL queries failed ---
-            Boolean allFailed = true;
-            List<String> errorMessages = new List<String>();
-            for (BusinessIntelligence.QueryExecution exec : executions) {
-                if (exec.error == null) {
-                    allFailed = false;
-                    break;
-                }
-                errorMessages.add(exec.error + ' | SOQL: ' + exec.soql);
-            }
-            if (allFailed && !errorMessages.isEmpty()) {
-                System.debug(LoggingLevel.WARN, 'All queries failed, attempting retry with error feedback');
-                String retryPrompt = nlToSoqlPrompt
-                    + '\n\nIMPORTANT: Your previous queries ALL failed with these errors:\n'
-                    + String.join(errorMessages, '\n')
-                    + '\n\nFix the SOQL errors and try again. Common fixes:'
-                    + '\n- Do not use GROUP BY on non-groupable fields (Subject, Description, AnnualRevenue, Body, etc.)'
-                    + '\n- Use aggregate functions (SUM, AVG, MAX) only with GROUP BY on groupable fields'
-                    + '\n- For ranking/sorting, use ORDER BY instead of GROUP BY'
-                    + '\n- For activity analysis, GROUP BY ActivityType, Status, or TaskSubtype — not Subject'
-                    + '\n- Ensure field names exist on the queried object'
-                    + '\nGenerate corrected SOQL now.';
-                String retryResponse = AgentforceWorkspaceAnalysisService.callModelsAPI(retryPrompt, resolvedModel);
-                if (String.isNotBlank(retryResponse) && !retryResponse.trim().startsWith('<p>Error')) {
-                    List<BusinessIntelligence.QueryPlan> retryPlans = BusinessIntelligence.parseAndValidateSOQL(retryResponse);
-                    if (!retryPlans.isEmpty()) {
-                        executions = BusinessIntelligence.executeQueries(retryPlans);
-                    }
-                }
-            }
+            // ── Success: use the reasoning engine's query executions ──
+            List<BusinessIntelligence.QueryExecution> executions = reasoning.executions;
 
             // --- Consolidated data collection ---
             Set<Id> allOppIds = AgentforceWorkspaceQueryService.collectAllOppIds(executions);
@@ -333,6 +309,28 @@ public with sharing class AgentforceWorkspaceController {
             ed.userName = userName;
             ed.userFullName = userFullName;
             ed.hasAnyResults = AgentforceWorkspaceQueryService.checkHasAnyResults(executions);
+
+            // ── Data Cloud Enrichment ──────────────────────────────────────
+            // If the user is asking about consumption/credit usage, inject Data Cloud DLO data
+            // so Pass 2 can provide a unified CRM + Data Cloud analysis.
+            try {
+                A8_DataCloudCreditUsageService.EnrichmentResult dcResult =
+                    A8_DataCloudCreditUsageService.enrich(userMessage, executions);
+                if (dcResult != null && dcResult.hasData) {
+                    ed.queryResultsText += '\n\n' + dcResult.formattedResults;
+                    ed.hasAnyResults = true;
+                    queriedLabels.add('Data Cloud usage');
+                    // Surface each DLO account as a dedicated Related Records tab (supports comparison)
+                    if (dcResult.recordTabs != null && !dcResult.recordTabs.isEmpty()) {
+                        for (Integer ti = dcResult.recordTabs.size() - 1; ti >= 0; ti--) {
+                            recordTabs.add(0, dcResult.recordTabs[ti]);
+                        }
+                    }
+                }
+            } catch (Exception dcEx) {
+                // DC enrichment failures are non-fatal — log and continue
+                System.debug(LoggingLevel.WARN, 'Data Cloud enrichment skipped: ' + dcEx.getMessage());
+            }
 
             result.executionDataJson = JSON.serialize(new Map<String, Object>{ 'executionData' => ed });
             result.recordTabs = recordTabs;
@@ -377,6 +375,18 @@ public with sharing class AgentforceWorkspaceController {
 
         try {
             Map<String, Object> wrapper = (Map<String, Object>) JSON.deserializeUntyped(executionDataJson);
+
+            // Handle reasoning engine failure explanations (all attempts exhausted or clarification needed)
+            if (wrapper.containsKey('isFailureExplanation') && (Boolean) wrapper.get('isFailureExplanation')) {
+                AgentforceWorkspaceModels.ChatResult cr = new AgentforceWorkspaceModels.ChatResult();
+                cr.response = (String) wrapper.get('html');
+                if (wrapper.containsKey('suggestions') && wrapper.get('suggestions') != null) {
+                    for (Object s : (List<Object>) wrapper.get('suggestions')) {
+                        cr.suggestions.add(String.valueOf(s));
+                    }
+                }
+                return cr;
+            }
 
             // Handle create action results (already processed in buildQueries)
             if (wrapper.containsKey('isCreateResult') && (Boolean) wrapper.get('isCreateResult')) {

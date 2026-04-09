@@ -22,8 +22,8 @@ const CREDIT_COSTS = { basic: 2, standard: 4, advanced: 16 };
 
 // Map model IDs to credit tiers
 const MODEL_CREDIT_TIER = {
-  sfdc_ai__DefaultVertexAIGemini30Flash: "basic",
-  sfdc_ai__DefaultVertexAIGeminiPro30: "standard",
+  sfdc_ai__DefaultVertexAIGemini31FlashLite: "basic",
+  sfdc_ai__DefaultVertexAIGeminiPro31: "standard",
   sfdc_ai__DefaultGPT5: "standard",
   sfdc_ai__DefaultGPT52: "standard",
   sfdc_ai__DefaultBedrockNvidiaNemotronNano330b: "basic",
@@ -32,8 +32,8 @@ const MODEL_CREDIT_TIER = {
 };
 
 const MODELS = [
-  { id: "sfdc_ai__DefaultVertexAIGemini30Flash", label: "Gemini Flash 3.0", logoKey: "gemini", premium: false },
-  { id: "sfdc_ai__DefaultVertexAIGeminiPro30",   label: "Gemini Pro 3.0",   logoKey: "gemini", premium: false },
+  { id: "sfdc_ai__DefaultVertexAIGemini31FlashLite", label: "Gemini 3.1 Flash", logoKey: "gemini", premium: false },
+  { id: "sfdc_ai__DefaultVertexAIGeminiPro31",       label: "Gemini 3.1 Pro",   logoKey: "gemini", premium: false },
   { id: "sfdc_ai__DefaultGPT5",                  label: "GPT-5",            logoKey: "openai", premium: false },
   { id: "sfdc_ai__DefaultGPT52",                 label: "GPT-5.2",          logoKey: "openai", premium: false },
   { id: "sfdc_ai__DefaultBedrockNvidiaNemotronNano330b",  label: "Nemotron 3 Nano", logoKey: "nvidia", premium: false },
@@ -88,6 +88,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   @track sidebarCreatedRecords = [];
   @track isCreatedRecordExpanded = false;
   @track _createdRecordBadgeVisible = false;
+  @track _recordActionType = "created"; // "created" | "updated" | "deleted"
   @track mapAddresses = [];
   @track isMapExpanded = false;
   @track _mapBadgeVisible = false;
@@ -294,6 +295,11 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
   get createdRecordChevronClass() {
     return "collapsible-chevron" + (this.isCreatedRecordExpanded ? " collapsible-chevron-expanded" : "");
+  }
+
+  get recordActionSectionTitle() {
+    const labels = { created: "Created Record", updated: "Updated Record", deleted: "Deleted Record" };
+    return labels[this._recordActionType] || "Record Action";
   }
 
   get recordViewModalTitle() {
@@ -834,10 +840,27 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
   // ─── Step Management ──────────────────────────────────
 
+  _parseLabelParts(label) {
+    const BOLD_PREFIXES = ["Plan:", "Refined approach"];
+    for (const prefix of BOLD_PREFIXES) {
+      if (label.startsWith(prefix + " ") || label.startsWith(prefix + ":")) {
+        // e.g. "Plan: ..." → boldPrefix="Plan:", labelRest="..."
+        const colonIdx = label.indexOf(":");
+        if (colonIdx !== -1) {
+          return { boldPrefix: label.slice(0, colonIdx + 1), labelRest: label.slice(colonIdx + 2) };
+        }
+      }
+    }
+    return { boldPrefix: null, labelRest: label };
+  }
+
   _addStep(label) {
+    const { boldPrefix, labelRest } = this._parseLabelParts(label);
     const step = {
       id: "step-" + Date.now() + "-" + Math.random().toString(36).substr(2, 4),
       label,
+      boldPrefix,
+      labelRest,
       status: "in-progress",
       isComplete: false,
       isInProgress: true,
@@ -849,17 +872,19 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   }
 
   _completeStep(stepId) {
-    this.agentSteps = this.agentSteps.map(s =>
-      s.id === stepId
-        ? { ...s, status: "complete", isComplete: true, isInProgress: false, isPending: false, statusClass: "step-item step-complete" }
-        : s
-    );
+    this.agentSteps = this.agentSteps.map(s => {
+      if (s.id !== stepId) return s;
+      return { ...s, status: "complete", isComplete: true, isInProgress: false, isPending: false, statusClass: "step-item step-complete" };
+    });
   }
 
   _addCompletedStep(label) {
+    const { boldPrefix, labelRest } = this._parseLabelParts(label);
     const step = {
       id: "step-" + Date.now() + "-" + Math.random().toString(36).substr(2, 4),
       label,
+      boldPrefix,
+      labelRest,
       status: "complete",
       isComplete: true,
       isInProgress: false,
@@ -909,20 +934,15 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     try {
       const history = this._buildHistory();
 
-      // ── Pre-steps: profile & role verification ──
+      // ── Pre-step: profile & role verification ──
       const name = this._userFirstName || "your";
-      const profileStepId = this._addStep(`Respecting ${name}'s profile & permissions...`);
+      const profileStepId = this._addStep(`Respecting ${name}'s role, profile, and permissions...`);
       // eslint-disable-next-line @lwc/lwc/no-async-operation
       await new Promise(r => setTimeout(r, 2000));
       this._completeStep(profileStepId);
 
-      const roleStepId = this._addStep(`Understanding ${name}'s role & access...`);
-      // eslint-disable-next-line @lwc/lwc/no-async-operation
-      await new Promise(r => setTimeout(r, 1500));
-      this._completeStep(roleStepId);
-
       // ── Step 1: Build queries + get records ──
-      const buildStepId = this._addStep("Securely querying accessible Salesforce data...");
+      const buildStepId = this._addStep("Understanding your intent...");
 
       const queryResult = await buildQueries({
         userMessage: text,
@@ -932,13 +952,25 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
       this._completeStep(buildStepId);
 
+      // Surface intent understanding from the reasoning engine
+      if (queryResult?.intentLabel) {
+        this._addCompletedStep(`Plan: ${queryResult.intentLabel}`);
+      }
+      if (queryResult?.reasoningAttempts > 1) {
+        this._addCompletedStep(`Refined approach (${queryResult.reasoningAttempts} attempts)...`);
+      }
+
       // Show record tabs inline in the chat
       const newRecordTabs = queryResult?.recordTabs ?? [];
       if (newRecordTabs.length > 0) {
         // Add a completed step for each object type found
         for (const tab of newRecordTabs) {
-          const label = tab.recordCount === 1 ? this._singularize(tab.objectLabel) : tab.objectLabel;
-          this._addCompletedStep(`Found ${tab.recordCount} ${label}...`);
+          if (tab.dataCloudSource) {
+            this._addCompletedStep(`Found ${tab.objectLabel} records in Data 360...`);
+          } else {
+            const label = tab.recordCount === 1 ? this._singularize(tab.objectLabel) : tab.objectLabel;
+            this._addCompletedStep(`Found ${tab.recordCount} ${label}...`);
+          }
         }
         this._cachedRecordTabs = newRecordTabs;
         // Show records in the sidebar with notification badge
@@ -954,7 +986,13 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         }
         this._scrollToBottom();
       } else {
-        this._addCompletedStep("No matching records found...");
+        // Queries ran but returned no displayable records — use a contextual label
+        const hasExecData = !!(queryResult?.executionDataJson);
+        this._addCompletedStep(
+          hasExecData
+            ? "Queries complete — preparing analysis..."
+            : "No matching records found..."
+        );
       }
 
       // ── Step 2: Analyze results ──
@@ -1009,14 +1047,14 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
           this._saveToCache();
         }
 
-        // Handle multi-record create — populate both the Created Records sidebar and Related Records tabs
+        // Handle multi-record create
         if (analysis?.allCreatedRecords && analysis.allCreatedRecords.length > 0) {
+          this._recordActionType = "created";
           this.sidebarCreatedRecords = analysis.allCreatedRecords;
           this.sidebarCreatedRecord = analysis.allCreatedRecords[0];
           this.isCreatedRecordExpanded = true;
           this._createdRecordBadgeVisible = false;
           this._pendingRecordUpdate = null;
-          // Build record tabs so Related Records is populated
           const tabs = this._buildTabsFromCreatedRecords(analysis.allCreatedRecords);
           if (tabs.length > 0) {
             this._cachedRecordTabs = tabs;
@@ -1024,7 +1062,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
           }
           this._saveToCache();
         } else if (analysis?.createdRecord) {
-          // Single record create
+          this._recordActionType = "created";
           this.sidebarCreatedRecord = analysis.createdRecord;
           this.sidebarCreatedRecords = [analysis.createdRecord];
           this.isCreatedRecordExpanded = true;
@@ -1041,6 +1079,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
         // Handle record field update result
         if (analysis?.updatedRecord) {
+          this._recordActionType = "updated";
           this.sidebarCreatedRecord = analysis.updatedRecord;
           this.sidebarCreatedRecords = [analysis.updatedRecord];
           this.isCreatedRecordExpanded = true;
@@ -1358,7 +1397,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     out = out.replace(/`([^`\n]+?)`/g, "<code>$1</code>");
     // Convert newlines to <br> for proper spacing
     // Only convert \n that are NOT immediately between closing and opening block tags
-    out = out.replace(/\n\n/g, "<br><br>");
+    out = out.replace(/\n\n/g, "<br>");
     out = out.replace(/(?<!\>)\n(?!\<)/g, "<br>");
     out = out.replace(/\n/g, " ");
     out = this._inlineTableStyles(out);

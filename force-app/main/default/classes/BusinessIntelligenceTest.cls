@@ -72,7 +72,8 @@ public class BusinessIntelligenceTest {
     Test.stopTest();
 
     System.assertEquals(1, results.size(), 'Should return exactly one result');
-    System.assertNotEquals(null, results[0].analysisResult, 'Analysis result should not be null');
+    System.assertNotEquals(null, results[0].chartData, 'Chart data should not be null');
+    System.assertNotEquals(null, results[0].chartData.analysisHtml, 'Analysis HTML should not be null');
   }
 
   @isTest
@@ -84,7 +85,7 @@ public class BusinessIntelligenceTest {
     Test.stopTest();
 
     System.assertEquals(1, results.size());
-    System.assert(results[0].analysisResult.contains('No query provided'));
+    System.assert(results[0].chartData.analysisHtml.contains('No query provided'));
   }
 
   @isTest
@@ -94,7 +95,7 @@ public class BusinessIntelligenceTest {
     Test.stopTest();
 
     System.assertEquals(1, results.size());
-    System.assert(results[0].analysisResult.contains('No query provided'));
+    System.assert(results[0].chartData.analysisHtml.contains('No query provided'));
   }
 
   @isTest
@@ -109,7 +110,7 @@ public class BusinessIntelligenceTest {
     Test.stopTest();
 
     System.assertEquals(1, results.size());
-    System.assert(results[0].analysisResult.contains('question is required'));
+    System.assert(results[0].chartData.analysisHtml.contains('question is required'));
   }
 
   @isTest
@@ -124,7 +125,7 @@ public class BusinessIntelligenceTest {
     Test.stopTest();
 
     System.assertEquals(1, results.size());
-    System.assert(results[0].analysisResult.contains('question is required'));
+    System.assert(results[0].chartData.analysisHtml.contains('question is required'));
   }
 
   // ═══════════════════════════════════════════════
@@ -142,24 +143,6 @@ public class BusinessIntelligenceTest {
     System.assert(context.contains('Case'), 'Should contain Case');
     System.assert(context.contains('Standard Objects'), 'Should contain standard header');
     System.assert(context.contains('Custom Objects'), 'Should contain custom header');
-  }
-
-  // ═══════════════════════════════════════════════
-  // buildNLtoSOQLPrompt()
-  // ═══════════════════════════════════════════════
-
-  @isTest
-  static void testBuildNLtoSOQLPrompt() {
-    Test.startTest();
-    String prompt = BusinessIntelligence.buildNLtoSOQLPrompt(
-      'Show me my deals', '005000000000001', 'Test User', 'Schema context here'
-    );
-    Test.stopTest();
-
-    System.assert(prompt.contains('Show me my deals'));
-    System.assert(prompt.contains('Test User'));
-    System.assert(prompt.contains('005000000000001'));
-    System.assert(prompt.contains('SOQL expert'));
   }
 
   // ═══════════════════════════════════════════════
@@ -384,7 +367,7 @@ public class BusinessIntelligenceTest {
   }
 
   // ═══════════════════════════════════════════════
-  // hasAggregateFunction()
+  // hasOrWithSubquery() / hasAggregateFunction()
   // ═══════════════════════════════════════════════
 
   @isTest
@@ -490,201 +473,75 @@ public class BusinessIntelligenceTest {
   }
 
   // ═══════════════════════════════════════════════
-  // buildAnalysisPrompt()
+  // cleanResponseForAgent()
   // ═══════════════════════════════════════════════
 
   @isTest
-  static void testBuildAnalysisPrompt_WithResults() {
-    BusinessIntelligence.QueryExecution exec = new BusinessIntelligence.QueryExecution();
-    exec.purpose = 'Get accounts';
-    exec.soql = 'SELECT Id, Name, Industry FROM Account LIMIT 10';
-    exec.results = [SELECT Id, Name, Industry FROM Account LIMIT 10];
-    exec.countResult = null;
-    exec.error = null;
-    exec.limitReached = false;
+  static void testCleanResponseForAgent_StripsSuggestionsAndChart() {
+    String input = '<h1>Pipeline Summary</h1><p>You have <b>5</b> open deals.</p>'
+        + '<CHART>{"chartType":"bar","title":"By Stage","items":[{"label":"Prospecting","value":2}]}</CHART>'
+        + '<SUGGESTIONS>["Show deals closing this month","Break down by rep"]</SUGGESTIONS>';
 
     Test.startTest();
-    String prompt = BusinessIntelligence.buildAnalysisPrompt(
-      'Show me my accounts', 'Test User',
-      new List<BusinessIntelligence.QueryExecution>{ exec }
-    );
+    String result = BusinessIntelligence.cleanResponseForAgent(input);
     Test.stopTest();
 
-    System.assert(prompt.contains('Show me my accounts'));
-    System.assert(prompt.contains('Get accounts'));
-    System.assert(prompt.contains('Key Findings'));
-    System.assert(prompt.contains('Recommendations'));
+    System.assert(result.contains('Pipeline Summary'), 'Should keep HTML content');
+    System.assert(!result.contains('<CHART>'), 'Should strip CHART block');
+    System.assert(!result.contains('<SUGGESTIONS>'), 'Should strip SUGGESTIONS block');
+    System.assert(!result.contains('chartType'), 'Should strip chart JSON');
   }
 
   @isTest
-  static void testBuildAnalysisPrompt_WithRelationshipFields() {
-    BusinessIntelligence.QueryExecution exec = new BusinessIntelligence.QueryExecution();
-    exec.purpose = 'Opps with accounts';
-    exec.soql = 'SELECT Id, Name, Account.Name FROM Opportunity LIMIT 10';
-    exec.results = [SELECT Id, Name, Account.Name FROM Opportunity LIMIT 10];
-    exec.countResult = null;
-    exec.error = null;
-    exec.limitReached = false;
+  static void testCleanResponseForAgent_ConvertsEmailDraft() {
+    String input = '<p>Here\'s a draft:</p>'
+        + '<EMAIL_DRAFT>{"toName":"Jane Doe","toAddress":"jane@acme.com","subject":"Follow Up","body":"Hi Jane,\\n\\nThanks for the call.\\n\\nBest,\\nDylan"}</EMAIL_DRAFT>'
+        + '<SUGGESTIONS>["Send it","Edit the draft"]</SUGGESTIONS>';
 
     Test.startTest();
-    String prompt = BusinessIntelligence.buildAnalysisPrompt(
-      'Show me opportunities with account names', 'Test User',
-      new List<BusinessIntelligence.QueryExecution>{ exec }
-    );
+    String result = BusinessIntelligence.cleanResponseForAgent(input);
     Test.stopTest();
 
-    System.assert(prompt.length() > 0);
-    System.assert(prompt.contains('Opps with accounts'));
+    System.assert(result.contains('Draft Email'), 'Should convert EMAIL_DRAFT to HTML heading');
+    System.assert(result.contains('Jane Doe'), 'Should include recipient name');
+    System.assert(result.contains('jane@acme.com'), 'Should include email address');
+    System.assert(result.contains('Follow Up'), 'Should include subject');
+    System.assert(!result.contains('<EMAIL_DRAFT>'), 'Should strip EMAIL_DRAFT tags');
+    System.assert(!result.contains('<SUGGESTIONS>'), 'Should strip SUGGESTIONS');
   }
 
   @isTest
-  static void testBuildAnalysisPrompt_EmptyResults() {
-    BusinessIntelligence.QueryExecution exec = new BusinessIntelligence.QueryExecution();
-    exec.purpose = 'Get leads';
-    exec.soql = 'SELECT Id FROM Lead LIMIT 10';
-    exec.results = new List<SObject>();
-    exec.countResult = null;
-    exec.error = null;
-    exec.limitReached = false;
+  static void testCleanResponseForAgent_PlainHtml() {
+    String input = '<h1>Results</h1><p>Here are your accounts.</p>';
 
     Test.startTest();
-    String prompt = BusinessIntelligence.buildAnalysisPrompt(
-      'Show me leads', 'Test User',
-      new List<BusinessIntelligence.QueryExecution>{ exec }
-    );
+    String result = BusinessIntelligence.cleanResponseForAgent(input);
     Test.stopTest();
 
-    System.assert(prompt.contains('No records found'));
+    System.assertEquals(input, result, 'Plain HTML should pass through unchanged');
   }
 
   @isTest
-  static void testBuildAnalysisPrompt_WithError() {
-    BusinessIntelligence.QueryExecution exec = new BusinessIntelligence.QueryExecution();
-    exec.purpose = 'Bad query';
-    exec.soql = 'SELECT Invalid FROM Account';
-    exec.results = new List<SObject>();
-    exec.countResult = null;
-    exec.error = 'Invalid field: Invalid';
-    exec.limitReached = false;
+  static void testCleanResponseForAgent_PreservesRecordLinks() {
+    String input = '<p>Top account: <a href="/lightning/r/Account/001xx/view"><b>Acme Corp</b></a> with '
+        + '<a href="/lightning/r/Opportunity/006xx/view"><b>Big Deal</b></a>.</p>';
 
     Test.startTest();
-    String prompt = BusinessIntelligence.buildAnalysisPrompt(
-      'Show me stuff', 'Test User',
-      new List<BusinessIntelligence.QueryExecution>{ exec }
-    );
+    String result = BusinessIntelligence.cleanResponseForAgent(input);
     Test.stopTest();
 
-    System.assert(prompt.contains('Invalid field'));
+    System.assert(result.contains('<a href="/lightning/r/Account/001xx/view">'), 'Should preserve Account link');
+    System.assert(result.contains('<a href="/lightning/r/Opportunity/006xx/view">'), 'Should preserve Opportunity link');
+    System.assert(result.contains('<b>Acme Corp</b>'), 'Should keep bold record name');
+    System.assert(result.contains('<b>Big Deal</b>'), 'Should keep bold opportunity name');
   }
 
   @isTest
-  static void testBuildAnalysisPrompt_WithCountResult() {
-    BusinessIntelligence.QueryExecution exec = new BusinessIntelligence.QueryExecution();
-    exec.purpose = 'Count accounts';
-    exec.soql = 'SELECT COUNT() FROM Account';
-    exec.results = new List<SObject>();
-    exec.countResult = 5;
-    exec.error = null;
-    exec.limitReached = false;
-
+  static void testCleanResponseForAgent_BlankInput() {
     Test.startTest();
-    String prompt = BusinessIntelligence.buildAnalysisPrompt(
-      'How many accounts?', 'Test User',
-      new List<BusinessIntelligence.QueryExecution>{ exec }
-    );
+    String result = BusinessIntelligence.cleanResponseForAgent('');
     Test.stopTest();
 
-    System.assert(prompt.contains('Total Count'));
-  }
-
-  @isTest
-  static void testBuildAnalysisPrompt_LimitReached() {
-    BusinessIntelligence.QueryExecution exec = new BusinessIntelligence.QueryExecution();
-    exec.purpose = 'Get many accounts';
-    exec.soql = 'SELECT Id, Name FROM Account LIMIT 200';
-    exec.results = [SELECT Id, Name FROM Account LIMIT 10];
-    exec.countResult = null;
-    exec.error = null;
-    exec.limitReached = true;
-
-    Test.startTest();
-    String prompt = BusinessIntelligence.buildAnalysisPrompt(
-      'Show me all accounts', 'Test User',
-      new List<BusinessIntelligence.QueryExecution>{ exec }
-    );
-    Test.stopTest();
-
-    System.assert(prompt.contains('display cap reached'));
-  }
-
-  @isTest
-  static void testBuildAnalysisPrompt_NoResultsAtAll() {
-    BusinessIntelligence.QueryExecution emptyExec = new BusinessIntelligence.QueryExecution();
-    emptyExec.purpose = 'Empty search';
-    emptyExec.soql = 'SELECT Id FROM Lead LIMIT 10';
-    emptyExec.results = new List<SObject>();
-    emptyExec.countResult = null;
-    emptyExec.error = null;
-    emptyExec.limitReached = false;
-
-    BusinessIntelligence.QueryExecution errorExec = new BusinessIntelligence.QueryExecution();
-    errorExec.purpose = 'Error query';
-    errorExec.soql = 'SELECT BadField FROM Account';
-    errorExec.results = new List<SObject>();
-    errorExec.countResult = null;
-    errorExec.error = 'Some error';
-    errorExec.limitReached = false;
-
-    Test.startTest();
-    String prompt = BusinessIntelligence.buildAnalysisPrompt(
-      'Find something', 'Test User',
-      new List<BusinessIntelligence.QueryExecution>{ emptyExec, errorExec }
-    );
-    Test.stopTest();
-
-    System.assert(prompt.contains('no matching data was found'));
-  }
-
-  @isTest
-  static void testBuildAnalysisPrompt_MixedResults() {
-    List<BusinessIntelligence.QueryExecution> executions = new List<BusinessIntelligence.QueryExecution>();
-
-    BusinessIntelligence.QueryExecution countExec = new BusinessIntelligence.QueryExecution();
-    countExec.purpose = 'Count accounts';
-    countExec.soql = 'SELECT COUNT() FROM Account';
-    countExec.results = new List<SObject>();
-    countExec.countResult = 1;
-    countExec.error = null;
-    countExec.limitReached = false;
-    executions.add(countExec);
-
-    BusinessIntelligence.QueryExecution detailExec = new BusinessIntelligence.QueryExecution();
-    detailExec.purpose = 'Account details';
-    detailExec.soql = 'SELECT Id, Name, Industry FROM Account LIMIT 200';
-    detailExec.results = [SELECT Id, Name, Industry FROM Account LIMIT 200];
-    detailExec.countResult = null;
-    detailExec.error = null;
-    detailExec.limitReached = false;
-    executions.add(detailExec);
-
-    BusinessIntelligence.QueryExecution errorExec = new BusinessIntelligence.QueryExecution();
-    errorExec.purpose = 'Failed query';
-    errorExec.soql = 'SELECT BadField FROM Account';
-    errorExec.results = new List<SObject>();
-    errorExec.countResult = null;
-    errorExec.error = 'Field not found';
-    errorExec.limitReached = false;
-    executions.add(errorExec);
-
-    Test.startTest();
-    String prompt = BusinessIntelligence.buildAnalysisPrompt(
-      'Tell me about my accounts', 'Test User', executions
-    );
-    Test.stopTest();
-
-    System.assert(prompt.contains('Total Count'));
-    System.assert(prompt.contains('Account details'));
-    System.assert(prompt.contains('Field not found'));
-    System.assert(prompt.contains('Key Findings'));
+    System.assertEquals('', result);
   }
 }

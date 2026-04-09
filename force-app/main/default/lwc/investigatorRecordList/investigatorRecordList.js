@@ -1,5 +1,7 @@
-import { LightningElement, api, track } from "lwc";
+import { LightningElement, api, track, wire } from "lwc";
 import { NavigationMixin } from "lightning/navigation";
+import { EnclosingTabId, openSubtab } from "lightning/platformWorkspaceApi";
+import data360Url from "@salesforce/resourceUrl/data360";
 
 const PAGE_SIZE = 10;
 
@@ -53,7 +55,9 @@ export default class InvestigatorRecordList extends NavigationMixin(
       index: i,
       isActive: i === this._activeTabIndex,
       tabClass:
-        "tab-item" + (i === this._activeTabIndex ? " tab-active" : "")
+        "tab-item" + (i === this._activeTabIndex ? " tab-active" : ""),
+      useCustomImage: !!tab.dataCloudSource,
+      customImageUrl: tab.dataCloudSource ? data360Url : null
     }));
   }
 
@@ -124,7 +128,8 @@ export default class InvestigatorRecordList extends NavigationMixin(
       ? `Showing ${tab.recordCount} of ${tab.totalCount} total. Refine your question to narrow results.`
       : null;
 
-    // Compute table width: sum of all column pixel widths if available
+    // Compute table width: sum of all column pixel widths if available.
+    // Once widths are locked we also switch to fixed layout so resize handles work correctly.
     const widthKeys = Object.keys(this._columnWidths);
     let tableStyle = '';
     if (widthKeys.length > 0 && widthKeys.length >= tab.columns.length) {
@@ -132,7 +137,7 @@ export default class InvestigatorRecordList extends NavigationMixin(
         return sum + (this._columnWidths[col.fieldName] || 0);
       }, 0);
       if (total > 0) {
-        tableStyle = `width:${total}px;min-width:${total}px;`;
+        tableStyle = `table-layout:fixed;width:${total}px;min-width:${total}px;`;
       }
     }
 
@@ -146,7 +151,10 @@ export default class InvestigatorRecordList extends NavigationMixin(
       columnCount: tab.columns.length,
       limitReached,
       limitMessage,
-      tableStyle
+      tableStyle,
+      hasDataCloudSource: !!tab.dataCloudSource,
+      dataCloudSource: tab.dataCloudSource || null,
+      dataCloudRecordId: tab.dataCloudRecordId || null
     };
   }
 
@@ -287,6 +295,47 @@ export default class InvestigatorRecordList extends NavigationMixin(
     this.dispatchEvent(new CustomEvent('expandrecords'));
   }
 
+  @wire(EnclosingTabId)
+  _enclosingTabId;
+
+  async handleDloNavigation(event) {
+    event.stopPropagation();
+    const recordId  = event.currentTarget.dataset.recordId;
+    const dloApiName = event.currentTarget.dataset.dloName || this.activeTab?.dataCloudSource;
+    if (!dloApiName && !recordId) return;
+
+    // Navigate to the DLO's detail page when we have the record ID,
+    // otherwise fall back to the standard object home.
+    const pageRef = recordId
+      ? {
+          type: "standard__recordPage",
+          attributes: {
+            recordId,
+            objectApiName: "DataLakeObjectInstance",
+            actionName: "view"
+          }
+        }
+      : {
+          type: "standard__objectPage",
+          attributes: { objectApiName: dloApiName, actionName: "home" }
+        };
+
+    try {
+      const tabId = this._enclosingTabId;
+      if (tabId) {
+        await openSubtab(tabId, {
+          pageReference: pageRef,
+          label: dloApiName || "Data Lake Object",
+          focus: true
+        });
+      } else {
+        this[NavigationMixin.Navigate](pageRef);
+      }
+    } catch (_err) {
+      this[NavigationMixin.Navigate](pageRef);
+    }
+  }
+
   handleRecordNav(event) {
     event.preventDefault();
     event.stopPropagation();
@@ -405,7 +454,9 @@ export default class InvestigatorRecordList extends NavigationMixin(
         totalCount: tab.totalCount || null,
         tabLabel,
         columns,
-        allRows
+        allRows,
+        dataCloudSource: tab.dataCloudSource || null,
+        dataCloudRecordId: tab.dataCloudRecordId || null
       };
     });
   }

@@ -1,13 +1,36 @@
 import { LightningElement, api } from "lwc";
 import { NavigationMixin } from "lightning/navigation";
 
+const ACTION_LABELS = {
+  created: { header: "Record Created", badge: "Success", icon: "utility:check" },
+  updated: { header: "Record Updated", badge: "Updated", icon: "utility:check" },
+  deleted: { header: "Record Deleted", badge: "Deleted", icon: "utility:delete" }
+};
+
 export default class InvestigatorCreatedRecord extends NavigationMixin(
   LightningElement
 ) {
   @api createdRecord;
+  @api actionType = "created";
 
   get hasRecord() {
     return !!this.createdRecord;
+  }
+
+  get _actionConfig() {
+    return ACTION_LABELS[this.actionType] || ACTION_LABELS.created;
+  }
+
+  get headerTitle() {
+    return this._actionConfig.header;
+  }
+
+  get badgeLabel() {
+    return this._actionConfig.badge;
+  }
+
+  get badgeIconName() {
+    return this._actionConfig.icon;
   }
 
   get recordName() {

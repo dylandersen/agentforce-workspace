@@ -327,7 +327,10 @@
                                     <circle cx="8" cy="8" r="7" stroke="#d1d1d1" stroke-width="1.5" fill="none"/>
                                   </svg>
                                 </template>
-                                <span class="step-label">{step.label}</span>
+                                <span class="step-label">
+                                  <template lwc:if={step.boldPrefix}><span class="step-label-bold">{step.boldPrefix}</span> {step.labelRest}</template>
+                                  <template lwc:else>{step.label}</template>
+                                </span>
                               </div>
                             </template>
                           </div>
@@ -366,11 +369,11 @@
                     </template>
                   </div>
 
-                  <!-- Created Record(s) Section -->
+                  <!-- Record Action Section (Created / Updated / Deleted) -->
                   <template lwc:if={hasSidebarCreatedRecord}>
                     <div class="sidebar-section collapsible-section">
                       <div class="collapsible-header" onclick={handleToggleCreatedRecord} role="button" tabindex="0">
-                        <span class="sidebar-section-title">Created Record</span>
+                        <span class="sidebar-section-title">{recordActionSectionTitle}</span>
                         <div class="collapsible-header-right">
                           <template lwc:if={showCreatedRecordBadge}>
                             <span class="notify-badge"></span>
@@ -383,7 +386,7 @@
                       <template lwc:if={isCreatedRecordExpanded}>
                         <div class="collapsible-body">
                           <template for:each={sidebarCreatedRecordsKeyed} for:item="createdRec">
-                            <c-investigator-created-record key={createdRec._key} created-record={createdRec} onviewrecord={handleViewRecord}></c-investigator-created-record>
+                            <c-investigator-created-record key={createdRec._key} created-record={createdRec} action-type={_recordActionType} onviewrecord={handleViewRecord}></c-investigator-created-record>
                           </template>
                         </div>
                       </template>

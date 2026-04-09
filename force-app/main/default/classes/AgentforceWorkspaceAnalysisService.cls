@@ -4,16 +4,83 @@
  */
 public with sharing class AgentforceWorkspaceAnalysisService {
 
-    public static final String DEFAULT_MODEL = 'sfdc_ai__DefaultVertexAIGemini30Flash';
+    public static final String DEFAULT_MODEL = 'sfdc_ai__DefaultVertexAIGemini31FlashLite';
 
-    // ─── Pass 1 Prompt ────────────────────────────────────────
+    // ─── Pass 1 Prompt (Modular) ────────────────────────────────
 
+    /** Backward-compatible overload — includes all modules. Called by BusinessIntelligence.analyze(). */
     public static String buildNLtoSOQLPrompt(String userMessage, String conversationHistory,
                                               String userId, String userName, String schemaContext) {
+        return buildNLtoSOQLPrompt(userMessage, conversationHistory, userId, userName, schemaContext, null);
+    }
+
+    /**
+     * Intent-aware modular prompt builder. Only includes rule modules relevant
+     * to the classified intent, reducing prompt size by 40-60% for query-only intents.
+     */
+    public static String buildNLtoSOQLPrompt(String userMessage, String conversationHistory,
+                                              String userId, String userName, String schemaContext,
+                                              AgentforceWorkspaceModels.IntentResult intent) {
         List<String> parts = new List<String>();
+        String intentType = (intent != null) ? intent.intent : null;
 
         parts.add('You are a Salesforce SOQL expert. Your ONLY job is to convert a natural language question into one or more SOQL queries.\n\n');
 
+        if (intent != null) {
+            parts.add('## CLASSIFIED INTENT\n');
+            parts.add('Intent: ' + intent.intent + ' | Plan: ' + intent.plan + '\n');
+            parts.add('Use this understanding to guide your output.\n\n');
+        }
+
+        appendCoreRules(parts, userId);
+        if (shouldIncludeCreateRules(intentType))        appendCreateUpdateRules(parts, userId);
+        if (shouldIncludeComposeRules(intentType))       appendComposeRules(parts, userId);
+        if (shouldIncludeComplexQueryRules(intentType))   appendComplexQueryRules(parts, userId);
+        if (shouldIncludeDataCloudRules(intentType, userMessage)) appendDataCloudRules(parts);
+
+        appendRunningUserContext(parts, userId, userName);
+        parts.add(schemaContext);
+
+        if (String.isNotBlank(conversationHistory)) {
+            parts.add('\n## CONVERSATION CONTEXT\n');
+            parts.add('The user is in a multi-turn conversation. Use this context to resolve references like "those", "that list", "break it down", etc.\n');
+            parts.add(conversationHistory + '\n');
+        }
+
+        parts.add('\n## USER QUESTION\n');
+        parts.add(userMessage + '\n\n');
+
+        appendFewShotExamples(parts, intentType, userId);
+        appendOutputFormat(parts, intentType, userId);
+
+        return String.join(parts, '');
+    }
+
+    // ─── Module Inclusion Logic ──────────────────────────────────
+
+    private static Boolean shouldIncludeCreateRules(String intentType) {
+        return intentType == null || intentType == 'CREATE' || intentType == 'UPDATE' || intentType == 'FOLLOWUP';
+    }
+
+    private static Boolean shouldIncludeComposeRules(String intentType) {
+        return intentType == null || intentType == 'COMPOSE';
+    }
+
+    private static Boolean shouldIncludeComplexQueryRules(String intentType) {
+        return intentType == null || intentType == 'QUERY' || intentType == 'COMPARE' || intentType == 'COMPOSE';
+    }
+
+    private static Boolean shouldIncludeDataCloudRules(String intentType, String userMessage) {
+        if (intentType == null) return true;
+        if (String.isBlank(userMessage)) return false;
+        String lower = userMessage.toLowerCase();
+        return lower.contains('consumption') || lower.contains('credit') || lower.contains('usage')
+            || lower.contains('data cloud') || lower.contains('data 360') || lower.contains('monitor');
+    }
+
+    // ─── Core SOQL Rules (1-14) — Always Included ───────────────
+
+    private static void appendCoreRules(List<String> parts, String userId) {
         parts.add('## RULES\n');
         parts.add('1. For data questions, generate ONLY SELECT queries. Never generate INSERT, UPDATE, DELETE, or UPSERT as SOQL.\n');
         parts.add('2. Every query MUST include a LIMIT clause. Maximum LIMIT is 200.\n');
@@ -36,18 +103,24 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('    - If multiple objects plausibly match, choose the best semantic fit based on requested fields/date filters and include a second query for the next-best match only if needed to disambiguate.\n');
         parts.add('    - Never invent object names; only use objects present in the provided schema.\n');
         parts.add('13. CRITICAL: NEVER use OR with subqueries. If you need records matching EITHER condition, generate TWO separate queries.\n');
-        parts.add('13b. CROSS-OBJECT NAME LOOKUPS: When querying Contacts, Opportunities, Cases, or other child records "at" or "for" a specific account mentioned by name, ALWAYS use an AccountId subquery with LIKE instead of matching Account.Name directly. Account names often contain abbreviations, suffixes, or parentheticals (e.g., "Pacific Distribution Centers (PDC)"). Direct Account.Name matching will fail.\n');
+        parts.add('13b. CROSS-OBJECT NAME LOOKUPS: When querying Tasks, Events, Contacts, Opportunities, Cases, or ANY child records "at", "for", or "with" a specific account mentioned by name, ALWAYS use an AccountId subquery with LIKE instead of matching Account.Name directly. Account names often contain abbreviations, suffixes, or extra words (e.g., user says "Meridian Financial" but Account.Name is "Meridian Financial Services"). Direct Name = \'...\' matching WILL FAIL.\n');
+        parts.add('    CORRECT: SELECT ... FROM Task WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Meridian Financial%\') LIMIT 200\n');
         parts.add('    CORRECT: SELECT ... FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%PDC%\') LIMIT 200\n');
-        parts.add('    WRONG:   SELECT ... FROM Contact WHERE Account.Name = \'PDC\' LIMIT 200\n');
+        parts.add('    WRONG:   SELECT ... FROM Task WHERE Account.Name = \'Meridian Financial\' LIMIT 200\n');
         parts.add('    WRONG:   SELECT ... FROM Contact WHERE Account.Name = \'Pacific Distribution Centers\' LIMIT 200\n');
-        parts.add('    This pattern works for any child object with AccountId. For objects without AccountId, use the relationship field with LIKE: e.g., Account.Name LIKE \'%keyword%\'.\n');
+        parts.add('    This pattern applies to ALL objects with AccountId: Task, Event, Contact, Opportunity, Case, etc. For objects without AccountId, use LIKE on the relationship: e.g., Account.Name LIKE \'%keyword%\'.\n');
         parts.add('14. ALWAYS PAIR detail queries with aggregate counts: for EVERY detail SELECT, also generate a matching COUNT() query with the same WHERE clause. Put the COUNT query FIRST. For grouped aggregates, a separate COUNT is not needed.\n');
+    }
+
+    // ─── Create/Update Rules (15-23) — CREATE, UPDATE, FOLLOWUP ─
+
+    private static void appendCreateUpdateRules(List<String> parts, String userId) {
+        parts.add('\n## RECORD CREATION & UPDATE RULES\n');
         parts.add('15. If the user wants to CREATE, ADD, LOG, or MAKE a new record (including log a call, log a task, schedule an event/meeting), do NOT generate queries. Output a create action JSON instead.\n');
         parts.add('15b. CRITICAL DISTINCTION — "draft/write/summarize/compose" vs "create/log a task": When the user (or conversation context) says "draft a summary", "write an email", "compose a message", "summarize findings", or agrees (e.g. "yes") to a suggestion involving drafting/writing/summarizing — this is a REQUEST TO GENERATE TEXT CONTENT, NOT a record creation. You must generate SOQL queries to fetch the relevant data so Pass 2 can compose the content. NEVER create a Task record for these requests. Only create Task/Event records when the user explicitly says "log a task", "create a task", "add a reminder", "schedule a meeting", etc.\n');
-        parts.add('15c. EMAIL RECIPIENT LOOKUP — When the user asks to draft an email to a "decision maker", "key contact", "executive", "CEO", or similar at an account, you MUST query Contacts for that account. Include these two queries: (1) a prioritised executive query: SELECT Id, Name, Title, Email FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%keyword%\') AND Title != null ORDER BY Title LIMIT 50, and (2) a fallback all-contacts query: SELECT Id, Name, Title, Email FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%keyword%\') ORDER BY LastModifiedDate DESC LIMIT 20. Pass 2 will choose the best recipient from the results.\n');
         parts.add('16. Record creation is supported for: Account, Contact, Case, Lead, Opportunity, Task, Event. "Log a call" = Task with TaskSubtype=Call. "Log a task" = Task. "Schedule a meeting/event" = Event.\n');
         parts.add('17. For a NEW create request where not enough info is provided: {"action":"create","objectApiName":"Task","fields":{"Subject":"value"}} — include any fields the user already mentioned.\n');
-        parts.add('18. When the user provides enough info to create the record (contact name, account name, subject, etc.) OR confirms a pending create: output {"action":"create_execute",...} directly. For Task/Event creates, if the user mentions a contact or account BY NAME, put the NAME in WhoId/WhatId — the system will resolve it to an ID automatically. Example: {"action":"create_execute","objectApiName":"Task","fields":{"Subject":"Call: Public Works Discussion","TaskSubtype":"Call","Status":"Completed","ActivityDate":"2026-03-16","WhoId":"David Kim","WhatId":"City of Irvine"}}.\n');
+        parts.add('18. When the user provides enough info to create the record (contact name, account name, subject, etc.) OR confirms a pending create: output {"action":"create_execute",...} directly. For Task/Event creates, if the user mentions a contact or account BY NAME, put the NAME in WhoId/WhatId — the system will resolve it to an ID automatically. Example: {"action":"create_execute","objectApiName":"Task","fields":{"Subject":"Call: Public Works Discussion","TaskSubtype":"Call","Status":"Completed","ActivityDate":"' + String.valueOf(Date.today()) + '","WhoId":"David Kim","WhatId":"City of Irvine"}}.\n');
         parts.add('19. Account creatable fields: Name (required), Industry (picklist), Type (picklist: Prospect|Customer - Direct|Customer - Channel|Channel Partner / Reseller|Technology Partner|Other), Phone, Website, BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry, Description, NumberOfEmployees (integer), AnnualRevenue (currency number only, no $ sign).\n');
         parts.add('19b. Task creatable fields: Subject (required), Status (default "Completed" for logged calls/tasks, "Not Started" for future tasks), Priority (High|Normal|Low, default Normal), ActivityDate (date YYYY-MM-DD, default today for logged calls), Description, WhoId (Contact/Lead NAME or ID), WhatId (Account/Opportunity NAME or ID), TaskSubtype (set to "Call" for calls, "Task" for tasks, "Email" for emails). For logging calls/tasks, ALWAYS set Status="Completed" and ActivityDate to today. For future tasks, set Status="Not Started".\n');
         parts.add('19c. Event creatable fields: Subject (required), StartDateTime (ISO 8601), EndDateTime (ISO 8601), Location, Description, WhoId (Contact/Lead NAME or ID), WhatId (Account/Opportunity NAME or ID). Default meeting duration is 30 minutes if not specified.\n');
@@ -59,46 +132,108 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('19i. Opportunity creatable fields: Name (required), StageName (required — use a valid stage from the schema below), CloseDate (required — YYYY-MM-DD), AccountId (account NAME — system resolves to ID), Amount (numeric only, no $ sign), Probability (0-100), NextStep, Description, Type, LeadSource.\n');
         parts.add('22. PENDING RECORD UPDATE — When the conversation history contains a line "[SYSTEM: Pending record update — Object: X, Record ID: xxx, Record Name: Y, Available blank fields: F1, F2, ...]" and the user\'s current message provides values for one or more of those fields, output: {"action":"update_execute","recordId":"xxx","objectApiName":"X","fields":{"FieldApiName":"value"}}. Use only field API names (e.g. Phone, Website, Amount). Include ONLY the fields the user actually mentioned. If the user declines (says "no", "skip", "looks good", "that\'s fine", "not now", or otherwise passes), output: {"action":"update_cancel"}.\n');
         parts.add('23. MULTIPLE RECORD CREATES IN ONE MESSAGE — When the user asks to create MORE THAN ONE record in a single message (e.g. "create an account called Acme AND a contact on it for Jane Smith"), output a multi-action JSON: {"actions":[{"action":"create_execute","objectApiName":"Account","fields":{...}},{"action":"create_execute","objectApiName":"Contact","fields":{"AccountId":"Acme",...}}]}. Rules: (a) Always order parent records first (Account before Contact/Case/Opportunity). (b) In the child record\'s reference field, put the PARENT\'S NAME (not ID) — the system creates the parent first and the name-to-ID lookup will find it automatically. (c) Use this format whenever the user mentions AND, ALSO, PLUS, or multiple objects being created. (d) If one of the creates needs more info, use "create" instead of "create_execute" for that step only.\n');
+    }
+
+    // ─── Compose/Draft Rules (15b, 15c, 19e) — COMPOSE ──────────
+
+    private static void appendComposeRules(List<String> parts, String userId) {
+        parts.add('\n## CONTENT COMPOSITION RULES\n');
+        parts.add('15b. CRITICAL: "draft/write/summarize/compose" is a REQUEST TO GENERATE TEXT CONTENT, NOT a record creation. Generate SOQL queries to fetch the relevant data so the analysis pass can compose the content.\n');
+        parts.add('15c. EMAIL RECIPIENT LOOKUP — When the user asks to draft an email to a "decision maker", "key contact", "executive", "CEO", or similar at an account, you MUST generate these THREE queries in order:\n');
+        parts.add('    (1) PRIORITY — OpportunityContactRole on recent opportunities for the account: SELECT Id, Role, IsPrimary, Contact.Name, Contact.Email, Contact.Title, Opportunity.Name FROM OpportunityContactRole WHERE OpportunityId IN (SELECT Id FROM Opportunity WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%keyword%\') AND IsClosed = false ORDER BY CreatedDate DESC LIMIT 10) ORDER BY IsPrimary DESC LIMIT 50\n');
+        parts.add('    This identifies contacts who are actual Decision Makers, Economic Buyers, Champions, or Executive Sponsors on open deals.\n');
+        parts.add('    (2) C-suite/executive contacts on the account: SELECT Id, Name, Title, Email FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%keyword%\') AND Title != null ORDER BY Title LIMIT 50\n');
+        parts.add('    (3) Fallback all contacts: SELECT Id, Name, Title, Email FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%keyword%\') ORDER BY LastModifiedDate DESC LIMIT 20\n');
+        parts.add('    Pass 2 will select the best recipient from these results.\n');
+        parts.add('19e. NEVER interpret "draft", "write", "compose", "summarize", or "prepare" as record creation. These are content generation requests that require data queries.\n');
+    }
+
+    // ─── Complex Query Patterns (20-21) — QUERY, COMPARE, COMPOSE
+
+    private static void appendComplexQueryRules(List<String> parts, String userId) {
+        parts.add('\n## COMPLEX QUERY PATTERNS\n');
         parts.add('20. MEETINGS/EVENTS → ACCOUNTS → CASES PATTERN: When the question involves meetings/events AND their related Accounts or Cases, you MUST generate separate Account and Case queries using SOQL subquery joins via Event.WhatId. SOQL supports this pattern:\n');
         parts.add('    - Accounts from meetings: SELECT Id, Name, Industry, Type, Phone FROM Account WHERE Id IN (SELECT WhatId FROM Event WHERE OwnerId = \'' + userId + '\' AND ActivityDate = THIS_WEEK) LIMIT 200\n');
         parts.add('    - Cases for meeting accounts: SELECT Id, CaseNumber, Subject, Status, Priority, AccountId FROM Case WHERE AccountId IN (SELECT WhatId FROM Event WHERE OwnerId = \'' + userId + '\' AND ActivityDate = THIS_WEEK) AND IsClosed = false ORDER BY CreatedDate DESC LIMIT 200\n');
         parts.add('    - For high-priority cases: add AND Priority = \'High\' to the Case WHERE clause.\n');
         parts.add('    - ALWAYS generate all three queries (Event, Account, Case) when the question asks about meetings + accounts + cases.\n');
-        parts.add('21. CONTACT ROLES ON OPPORTUNITIES — When the user asks about decision makers, contact roles, stakeholders, or contacts on opportunities, you MUST generate an OpportunityContactRole query in addition to any Opportunity query. Example: SELECT Id, OpportunityId, ContactId, Role, IsPrimary, Contact.Name, Contact.Email, Opportunity.Name, Opportunity.Amount FROM OpportunityContactRole WHERE OpportunityId IN (SELECT Id FROM Opportunity WHERE OwnerId = \'' + userId + '\' AND Amount > 100000 AND IsClosed = false) [AND Role = \'Decision Maker\' when user asks for decision makers] LIMIT 200. Include the matching COUNT query. For activity with contacts (e.g., "had any activity with them in the last 30 days"), also query Task and Event WHERE WhoId IN (SELECT ContactId FROM OpportunityContactRole WHERE OpportunityId IN (...)).\n\n');
+        parts.add('21. CONTACT ROLES ON OPPORTUNITIES — When the user asks about decision makers, contact roles, stakeholders, or contacts on opportunities, you MUST generate an OpportunityContactRole query in addition to any Opportunity query. Example: SELECT Id, OpportunityId, ContactId, Role, IsPrimary, Contact.Name, Contact.Email, Opportunity.Name, Opportunity.Amount FROM OpportunityContactRole WHERE OpportunityId IN (SELECT Id FROM Opportunity WHERE OwnerId = \'' + userId + '\' AND Amount > 100000 AND IsClosed = false) [AND Role = \'Decision Maker\' when user asks for decision makers] LIMIT 200. Include the matching COUNT query. For activity with contacts (e.g., "had any activity with them in the last 30 days"), also query Task and Event WHERE WhoId IN (SELECT ContactId FROM OpportunityContactRole WHERE OpportunityId IN (...)).\n');
+    }
 
-        parts.add('## RUNNING USER CONTEXT\n');
+    // ─── Data Cloud Rules (24) — Credit/Usage Queries ────────────
+
+    private static void appendDataCloudRules(List<String> parts) {
+        parts.add('\n## DATA CLOUD RULES\n');
+        parts.add('24. DATA CLOUD / CREDIT USAGE QUERIES — When the user asks about "consumption", "credit usage", "credits", "data quality monitoring", "monitor runs", or similar, generate one Account lookup query PER company mentioned. Always include External_Account_ID__c in the SELECT. Do NOT query Data Lake Objects directly — the system auto-enriches results with Data Cloud data.\n');
+        parts.add('    SINGLE ACCOUNT example ("Summit Commerce Group\'s consumption"): {"queries":[{"purpose":"Account lookup for Data Cloud enrichment","soql":"SELECT Id, Name, External_Account_ID__c, Industry, Type FROM Account WHERE Name LIKE \'%Summit%\' LIMIT 5"}]}\n');
+        parts.add('    COMPARISON example ("Compare Meridian Financial Services\' consumption to Summit Commerce Group"): {"queries":[{"purpose":"Account lookup — Meridian","soql":"SELECT Id, Name, External_Account_ID__c, Industry, Type FROM Account WHERE Name LIKE \'%Meridian%\' LIMIT 5"},{"purpose":"Account lookup — Summit","soql":"SELECT Id, Name, External_Account_ID__c, Industry, Type FROM Account WHERE Name LIKE \'%Summit%\' LIMIT 5"}]}\n');
+    }
+
+    // ─── Running User Context ────────────────────────────────────
+
+    private static void appendRunningUserContext(List<String> parts, String userId, String userName) {
+        parts.add('\n## RUNNING USER CONTEXT\n');
         parts.add('- User ID: ' + userId + '\n');
         parts.add('- User Name: ' + userName + '\n');
         parts.add('- When the user says "my", "mine", or "I", filter by OwnerId = \'' + userId + '\'\n\n');
+    }
 
-        parts.add(schemaContext);
+    // ─── Few-Shot Examples (R6) ──────────────────────────────────
 
-        if (String.isNotBlank(conversationHistory)) {
-            parts.add('\n## CONVERSATION CONTEXT\n');
-            parts.add('The user is in a multi-turn conversation. Use this context to resolve references like "those", "that list", "break it down", etc.\n');
-            parts.add(conversationHistory + '\n');
+    private static void appendFewShotExamples(List<String> parts, String intentType, String userId) {
+        parts.add('## EXAMPLES\n');
+        parts.add('These show the exact output format for common patterns:\n\n');
+
+        parts.add('Example 1 — Multi-object with date filter:\n');
+        parts.add('User: "Accounts with open cases that also have deals closing this month"\n');
+        parts.add('Output: {"queries":[{"purpose":"Count of accounts with open cases","soql":"SELECT COUNT() FROM Account WHERE Id IN (SELECT AccountId FROM Case WHERE IsClosed = false)"},{"purpose":"Accounts with open cases","soql":"SELECT Id, Name, Industry, Type FROM Account WHERE Id IN (SELECT AccountId FROM Case WHERE IsClosed = false) LIMIT 200"},{"purpose":"Deals closing this month","soql":"SELECT Id, Name, Amount, CloseDate, StageName, Account.Name FROM Opportunity WHERE CloseDate = THIS_MONTH AND IsClosed = false LIMIT 200"}]}\n\n');
+
+        parts.add('Example 2 — Aggregation (avoid GROUP BY on non-groupable fields):\n');
+        parts.add('User: "Top 10 accounts by opportunity amount"\n');
+        parts.add('Output: {"queries":[{"purpose":"Accounts ranked by pipeline","soql":"SELECT AccountId, Account.Name, SUM(Amount) totalAmt FROM Opportunity WHERE IsClosed = false GROUP BY AccountId, Account.Name ORDER BY SUM(Amount) DESC LIMIT 10"}]}\n\n');
+
+        parts.add('Example 3 — Activity analysis (never GROUP BY Subject):\n');
+        parts.add('User: "Break down my recent activities by type"\n');
+        parts.add('Output: {"queries":[{"purpose":"Task breakdown by type","soql":"SELECT TaskSubtype, Status, COUNT(Id) total FROM Task WHERE OwnerId = \'' + userId + '\' AND CreatedDate = LAST_N_DAYS:30 GROUP BY TaskSubtype, Status ORDER BY COUNT(Id) DESC LIMIT 200"},{"purpose":"Recent events","soql":"SELECT Subject, ActivityDate, Type FROM Event WHERE OwnerId = \'' + userId + '\' AND ActivityDate = LAST_N_DAYS:30 ORDER BY ActivityDate DESC LIMIT 200"}]}\n\n');
+
+        parts.add('Example 4 — Fuzzy account name matching:\n');
+        parts.add('User: "Show me contacts at Acme"\n');
+        parts.add('Output: {"queries":[{"purpose":"Count of contacts at Acme","soql":"SELECT COUNT() FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Acme%\')"},{"purpose":"Contacts at Acme","soql":"SELECT Id, Name, Title, Email, Phone FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Acme%\') ORDER BY LastModifiedDate DESC LIMIT 200"}]}\n\n');
+
+        parts.add('Example 5 — Activity summary for an account (fuzzy name + Tasks + Events):\n');
+        parts.add('User: "Write a summary of all recent activity with Meridian Financial"\n');
+        parts.add('Output: {"queries":[{"purpose":"Account lookup","soql":"SELECT Id, Name, OwnerId, Owner.Name, Industry, Type FROM Account WHERE Name LIKE \'%Meridian Financial%\' LIMIT 5"},{"purpose":"Count of recent tasks","soql":"SELECT COUNT() FROM Task WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Meridian Financial%\') AND CreatedDate = LAST_N_DAYS:90"},{"purpose":"Recent tasks","soql":"SELECT Id, Subject, Status, TaskSubtype, ActivityDate, CreatedDate, Who.Name, Owner.Name FROM Task WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Meridian Financial%\') AND CreatedDate = LAST_N_DAYS:90 ORDER BY CreatedDate DESC LIMIT 200"},{"purpose":"Count of recent events","soql":"SELECT COUNT() FROM Event WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Meridian Financial%\') AND CreatedDate = LAST_N_DAYS:90"},{"purpose":"Recent events","soql":"SELECT Id, Subject, ActivityDate, StartDateTime, EndDateTime, Type, Who.Name, Owner.Name FROM Event WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Meridian Financial%\') AND CreatedDate = LAST_N_DAYS:90 ORDER BY StartDateTime DESC LIMIT 200"}]}\n');
+        parts.add('NOTE: ALWAYS use LIKE \'%partial name%\' in a subquery for AccountId when the user mentions an account by name. The user may say "Meridian Financial" but the actual Account name is "Meridian Financial Services". Direct Name = \'...\' will fail.\n\n');
+
+        if (shouldIncludeCreateRules(intentType)) {
+            parts.add('Example 6 — Log a call (create action):\n');
+            parts.add('User: "Log a call with Sarah about the renewal"\n');
+            parts.add('Output: {"action":"create_execute","objectApiName":"Task","fields":{"Subject":"Call: Renewal Discussion","TaskSubtype":"Call","Status":"Completed","ActivityDate":"' + String.valueOf(Date.today()) + '","WhoId":"Sarah"}}\n\n');
         }
+    }
 
-        parts.add('\n## USER QUESTION\n');
-        parts.add(userMessage + '\n\n');
+    // ─── Output Format ───────────────────────────────────────────
 
+    private static void appendOutputFormat(List<String> parts, String intentType, String userId) {
         parts.add('## OUTPUT FORMAT\n');
         parts.add('Return ONLY a JSON object with no additional text, no markdown code blocks, no explanation.\n');
         parts.add('For data queries: {"queries":[{"purpose":"Brief description","soql":"SELECT ... OR FIND {...} RETURNING ..."}]}\n');
-        parts.add('For new create request: {"action":"create","objectApiName":"Account","fields":{"Name":"value"}}\n');
-        parts.add('For log a call (enough context): {"action":"create_execute","objectApiName":"Task","fields":{"Subject":"Call: Public Works Discussion","TaskSubtype":"Call","Status":"Completed","ActivityDate":"' + String.valueOf(Date.today()) + '","WhoId":"David Kim","WhatId":"City of Irvine"}}\n');
-        parts.add('For log a call (need more info): {"action":"create","objectApiName":"Task","fields":{"Subject":"Call with David Kim","TaskSubtype":"Call"}}\n');
-        parts.add('For schedule event: {"action":"create_execute","objectApiName":"Event","fields":{"Subject":"Meeting with David Kim","WhoId":"David Kim","WhatId":"City of Irvine","StartDateTime":"2026-03-17T10:00:00","EndDateTime":"2026-03-17T10:30:00"}}\n');
-        parts.add('For create contact: {"action":"create_execute","objectApiName":"Contact","fields":{"FirstName":"Jane","LastName":"Smith","AccountId":"Acme Corp","Email":"jane.smith@acme.com","Title":"VP Sales"}}\n');
-        parts.add('For create case: {"action":"create_execute","objectApiName":"Case","fields":{"Subject":"Login page not loading","Status":"New","Priority":"High","Origin":"Email","AccountId":"Acme Corp"}}\n');
-        parts.add('For create lead: {"action":"create_execute","objectApiName":"Lead","fields":{"FirstName":"Bob","LastName":"Jones","Company":"StartupCo","Email":"bob@startup.co","Title":"CEO"}}\n');
-        parts.add('For create opportunity: {"action":"create_execute","objectApiName":"Opportunity","fields":{"Name":"StartupCo - Enterprise Deal","StageName":"Qualification","CloseDate":"2026-06-30","AccountId":"StartupCo","Amount":50000}}\n');
-        parts.add('For updating fields on a pending record: {"action":"update_execute","recordId":"001Hu0000XXXXX","objectApiName":"Account","fields":{"Phone":"555-1234","Website":"https://www.example.com"}}\n');
-        parts.add('For declining a pending field update: {"action":"update_cancel"}\n');
-        parts.add('For creating MULTIPLE records in one message: {"actions":[{"action":"create_execute","objectApiName":"Account","fields":{"Name":"Scott\'s Scooters","Type":"Other","BillingStreet":"123 Main Street","BillingCity":"Irvine","BillingState":"CA","BillingPostalCode":"92618"}},{"action":"create_execute","objectApiName":"Contact","fields":{"FirstName":"Scott","LastName":"Hendrix","Title":"CEO","Phone":"714-123-1234","Email":"scott@scottsscooters.com","AccountId":"Scott\'s Scooters"}}]}\n');
-        parts.add('Use SOQL (SELECT) for most queries. Use SOSL (FIND) only for Incident/Problem/Case when you need to search Description (long text).\n');
 
-        return String.join(parts, '');
+        if (shouldIncludeCreateRules(intentType)) {
+            parts.add('For new create request: {"action":"create","objectApiName":"Account","fields":{"Name":"value"}}\n');
+            parts.add('For log a call (enough context): {"action":"create_execute","objectApiName":"Task","fields":{"Subject":"Call: Topic","TaskSubtype":"Call","Status":"Completed","ActivityDate":"' + String.valueOf(Date.today()) + '","WhoId":"Contact Name","WhatId":"Account Name"}}\n');
+            parts.add('For log a call (need more info): {"action":"create","objectApiName":"Task","fields":{"Subject":"Call with Name","TaskSubtype":"Call"}}\n');
+            parts.add('For schedule event: {"action":"create_execute","objectApiName":"Event","fields":{"Subject":"Meeting","WhoId":"Name","WhatId":"Account","StartDateTime":"2026-03-17T10:00:00","EndDateTime":"2026-03-17T10:30:00"}}\n');
+            parts.add('For create contact: {"action":"create_execute","objectApiName":"Contact","fields":{"FirstName":"Jane","LastName":"Smith","AccountId":"Acme Corp","Email":"jane@acme.com","Title":"VP Sales"}}\n');
+            parts.add('For create case: {"action":"create_execute","objectApiName":"Case","fields":{"Subject":"Issue","Status":"New","Priority":"High","Origin":"Email","AccountId":"Acme Corp"}}\n');
+            parts.add('For create lead: {"action":"create_execute","objectApiName":"Lead","fields":{"FirstName":"Bob","LastName":"Jones","Company":"StartupCo","Email":"bob@startup.co","Title":"CEO"}}\n');
+            parts.add('For create opportunity: {"action":"create_execute","objectApiName":"Opportunity","fields":{"Name":"Deal Name","StageName":"Qualification","CloseDate":"2026-06-30","AccountId":"Company","Amount":50000}}\n');
+            parts.add('For updating fields on a pending record: {"action":"update_execute","recordId":"001Hu0000XXXXX","objectApiName":"Account","fields":{"Phone":"555-1234","Website":"https://www.example.com"}}\n');
+            parts.add('For declining a pending field update: {"action":"update_cancel"}\n');
+            parts.add('For creating MULTIPLE records: {"actions":[{"action":"create_execute","objectApiName":"Account","fields":{"Name":"Company"}},{"action":"create_execute","objectApiName":"Contact","fields":{"FirstName":"Jane","LastName":"Smith","AccountId":"Company"}}]}\n');
+        }
+
+        parts.add('Use SOQL (SELECT) for most queries. Use SOSL (FIND) only for Incident/Problem/Case when you need to search Description (long text).\n');
     }
 
     // ─── Pass 2 Prompt ────────────────────────────────────────
@@ -108,9 +243,14 @@ public with sharing class AgentforceWorkspaceAnalysisService {
                                                       String userMessage, String conversationHistory) {
         List<String> parts = new List<String>();
 
-        parts.add('You are a senior business analyst working inside a Salesforce CRM. ');
+        parts.add('You are a senior business analyst working inside a Salesforce CRM that is integrated with Salesforce Data 360 (Data Cloud). ');
         parts.add('A Sales and Marketing professional named ' + data.userName + ' asked a business intelligence question. ');
-        parts.add('You have access to the query results below. Provide a rich, insightful analysis.\n\n');
+        parts.add('You have access to query results below from BOTH the Salesforce CRM and Salesforce Data 360. Provide a rich, insightful analysis.\n\n');
+        parts.add('**DATA SOURCES:**\n');
+        parts.add('- CRM data: standard Salesforce objects (Account, Opportunity, Contact, etc.)\n');
+        parts.add('- Data 360 data: labeled "DATA CLOUD — Credit Usage", sourced from the **Daily_Credit_Usage__dll** Data Lake Object (DLO) in Salesforce Data 360.\n');
+        parts.add('When both sources are present, synthesize them into a unified answer.\n');
+        parts.add('**DATA SOURCE ATTRIBUTION RULE:** Whenever you include Data 360 / Data Cloud data in your response, you MUST cite the source exactly once in a small note. Use this exact format as the last line before your CHART block: <p><em>Data 360 source: <code>Daily_Credit_Usage__dll</code> (Data Lake Object)</em></p>. Do not repeat this citation multiple times.\n\n');
 
         parts.add('**Today\'s date:** ' + Datetime.now().format('MMMM d, yyyy') + '\n\n');
 
@@ -127,7 +267,14 @@ public with sharing class AgentforceWorkspaceAnalysisService {
 
         // Output format instructions
         parts.add('## OUTPUT FORMAT\n\n');
-        parts.add('**CRITICAL:** Return clean, compact HTML. No markdown. No code blocks.\n\n');
+        parts.add('**CRITICAL — HTML ONLY. ZERO MARKDOWN.**\n');
+        parts.add('Your response MUST be valid HTML. The rendering surface is an HTML viewer — markdown will appear as raw characters.\n');
+        parts.add('- NEVER use # or ## or ### for headings. Use <h1>, <h2>, <h3> tags instead.\n');
+        parts.add('- NEVER use **text** or *text* for emphasis. Use <b> or <em> tags.\n');
+        parts.add('- NEVER use ``` code fences. Use <code> or <pre> tags.\n');
+        parts.add('- NEVER use - or * for bullet lists. Use <ul><li> tags.\n');
+        parts.add('- NEVER use numbered lists with "1. 2. 3." notation. Use <ol><li> tags.\n');
+        parts.add('- Every section header MUST be an HTML tag like <h2> or <h3>.\n\n');
 
         parts.add('**VOICE & TONE:**\n');
         parts.add('- You are a helpful business analyst talking to a colleague. Be warm, direct, and insightful.\n');
@@ -151,14 +298,17 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('- Keep bullet points concise — 1 line each\n');
         parts.add('- **PREFER <table> for comparisons and grouped data.** When the data has 3+ items with shared dimensions (e.g., stages, types, reps, time periods), present it as a clean HTML table with <thead> and <tbody>. Tables are far easier to scan than bullet lists for numeric comparisons. Use <b> on standout values (highest, lowest, growth %). Example: stage breakdown, rep leaderboard, monthly trend, type comparison.\n');
         String fullName = String.isNotBlank(data.userFullName) ? data.userFullName : data.userName;
-        parts.add('- **EMAIL DRAFTS — RECIPIENT SELECTION:** When drafting an email, ALWAYS select a real contact from the QUERY RESULTS. Follow this priority order:\n');
-        parts.add('  (1) CEO, President, Chief * Officer (C-suite)\n');
-        parts.add('  (2) VP, Vice President, SVP, EVP\n');
-        parts.add('  (3) Director, Managing Director\n');
-        parts.add('  (4) Manager, Head of, Lead\n');
-        parts.add('  (5) Any contact with a non-blank Email field\n');
-        parts.add('  (6) If NO contacts exist in the data at all, use the account name with a placeholder email and explain in the intro that no contacts were found.\n');
-        parts.add('  RULES: NEVER invent a name like "Decision Maker" or "Key Contact". Use the EXACT Name and Email from the query results. If the chosen contact has no Email, write their name but note the email is missing. If you picked someone who is NOT obviously a decision maker, add one sentence in your intro explaining why (e.g. "I couldn\'t find a C-suite contact, so I\'ve addressed this to [Name], [Title], who is the most senior contact on record.").\n');
+        parts.add('- **EMAIL DRAFTS — RECIPIENT SELECTION:** When drafting an email, ALWAYS select a real contact from the QUERY RESULTS. Follow this strict priority order:\n');
+        parts.add('  (1) FIRST CHOICE — Contact with Role = "Decision Maker" in OpportunityContactRole on a recent open opportunity for this account\n');
+        parts.add('  (2) Contact with Role = "Economic Buyer", "Champion", or "Executive Sponsor" in OpportunityContactRole on a recent open opportunity\n');
+        parts.add('  (3) Any other contact in OpportunityContactRole on a recent opportunity — prefer IsPrimary = true if multiple exist\n');
+        parts.add('  (4) CEO, President, or Chief * Officer (C-suite title) from the account contacts\n');
+        parts.add('  (5) VP, Vice President, SVP, EVP\n');
+        parts.add('  (6) Director, Managing Director\n');
+        parts.add('  (7) Manager, Head of, Lead\n');
+        parts.add('  (8) Any contact with a non-blank Email field\n');
+        parts.add('  (9) If NO contacts exist in the data at all, use the account name with a placeholder email and explain in the intro that no contacts were found.\n');
+        parts.add('  RULES: NEVER invent a name like "Decision Maker" or "Key Contact". Use the EXACT Name and Email from the query results. If the chosen contact has no Email, write their name but note the email is missing. If you picked someone who is NOT obviously a decision maker, add one sentence in your intro explaining why (e.g. "I couldn\'t find a decision maker on record, so I\'ve addressed this to [Name], [Title], who is the most senior contact on record.").\n');
         parts.add('- **EMAIL DRAFT FORMAT:** Include the full email directly in your HTML response inside a <blockquote> element. Add a brief intro sentence (including any recipient-selection explanation), then output: <blockquote><p><b>To:</b> [Real Name from data] &lt;[real.email@company.com from data]&gt;</p><p><b>Subject:</b> Subject Line</p><p>Hi [First name],</p><p>[Body paragraph]</p><p>Best regards,<br>' + fullName + '</p></blockquote>. Sign with ' + fullName + '. NEVER use "[Your Name]". Skip the CHART block for email drafts. Still include SUGGESTIONS.\n');
 
         // Inject record link table so the LLM can embed clickable links
@@ -270,12 +420,38 @@ public with sharing class AgentforceWorkspaceAnalysisService {
 
     // ─── Suggestion Parser ────────────────────────────────────
 
+    /**
+     * Safety net: converts any markdown headers/bold that sneak through into proper HTML.
+     * Applied before any other parsing so the rendered output is always clean HTML.
+     */
+    @TestVisible
+    private static String convertMarkdownToHtml(String text) {
+        if (String.isBlank(text)) return text;
+        List<String> lines = text.split('\n');
+        List<String> out   = new List<String>();
+        for (String line : lines) {
+            if (line.startsWith('### ')) {
+                out.add('<h3>' + line.removeStart('### ').trim() + '</h3>');
+            } else if (line.startsWith('## ')) {
+                out.add('<h2>' + line.removeStart('## ').trim() + '</h2>');
+            } else if (line.startsWith('# ')) {
+                out.add('<h1>' + line.removeStart('# ').trim() + '</h1>');
+            } else {
+                out.add(line);
+            }
+        }
+        return String.join(out, '\n');
+    }
+
     public static AgentforceWorkspaceModels.ChatResult parseSuggestions(String raw) {
         AgentforceWorkspaceModels.ChatResult result = new AgentforceWorkspaceModels.ChatResult();
         if (String.isBlank(raw)) {
             result.response = '';
             return result;
         }
+
+        // Safety net: convert any markdown headers the model may have emitted despite instructions
+        raw = convertMarkdownToHtml(raw);
 
         // Extract <CHART> block (before SUGGESTIONS)
         Integer chartOpen  = raw.indexOf('<CHART>');

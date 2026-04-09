@@ -95,7 +95,7 @@ public class AgentforceWorkspaceControllerTest {
         };
         Test.startTest();
         AgentforceWorkspaceModels.ChatResult result =
-            AgentforceWorkspaceRecordCreator.handleCreateConfirm(actionResult, 'Dylan', 'sfdc_ai__DefaultVertexAIGemini30Flash');
+            AgentforceWorkspaceRecordCreator.handleCreateConfirm(actionResult, 'Dylan', 'sfdc_ai__DefaultVertexAIGemini31FlashLite');
         Test.stopTest();
         // callModelsAPI returns error string in test, parseSuggestions processes it
         System.assertNotEquals(null, result);
@@ -111,7 +111,7 @@ public class AgentforceWorkspaceControllerTest {
         };
         Test.startTest();
         AgentforceWorkspaceModels.ChatResult result =
-            AgentforceWorkspaceRecordCreator.handleCreateConfirm(actionResult, 'Dylan', 'sfdc_ai__DefaultVertexAIGemini30Flash');
+            AgentforceWorkspaceRecordCreator.handleCreateConfirm(actionResult, 'Dylan', 'sfdc_ai__DefaultVertexAIGemini31FlashLite');
         Test.stopTest();
         System.assertNotEquals(null, result);
     }
@@ -124,7 +124,7 @@ public class AgentforceWorkspaceControllerTest {
         };
         Test.startTest();
         AgentforceWorkspaceModels.ChatResult result =
-            AgentforceWorkspaceRecordCreator.handleCreateConfirm(actionResult, 'Dylan', 'sfdc_ai__DefaultVertexAIGemini30Flash');
+            AgentforceWorkspaceRecordCreator.handleCreateConfirm(actionResult, 'Dylan', 'sfdc_ai__DefaultVertexAIGemini31FlashLite');
         Test.stopTest();
         System.assertNotEquals(null, result);
     }
@@ -137,7 +137,7 @@ public class AgentforceWorkspaceControllerTest {
         };
         Test.startTest();
         AgentforceWorkspaceModels.ChatResult result =
-            AgentforceWorkspaceRecordCreator.handleCreateConfirm(actionResult, 'Dylan', 'sfdc_ai__DefaultVertexAIGemini30Flash');
+            AgentforceWorkspaceRecordCreator.handleCreateConfirm(actionResult, 'Dylan', 'sfdc_ai__DefaultVertexAIGemini31FlashLite');
         Test.stopTest();
         System.assertNotEquals(null, result);
     }
@@ -515,7 +515,7 @@ public class AgentforceWorkspaceControllerTest {
     static void testChat_WithModelName() {
         Test.startTest();
         AgentforceWorkspaceModels.ChatResult result =
-            AgentforceWorkspaceController.chat('Show accounts', null, 'sfdc_ai__DefaultVertexAIGemini30Flash');
+            AgentforceWorkspaceController.chat('Show accounts', null, 'sfdc_ai__DefaultVertexAIGemini31FlashLite');
         Test.stopTest();
         System.assertNotEquals(null, result.response);
     }
@@ -546,7 +546,7 @@ public class AgentforceWorkspaceControllerTest {
     static void testBuildQueries_WithModelName() {
         Test.startTest();
         AgentforceWorkspaceModels.QueryResult result =
-            AgentforceWorkspaceController.buildQueries('Show accounts', null, 'sfdc_ai__DefaultVertexAIGemini30Flash');
+            AgentforceWorkspaceController.buildQueries('Show accounts', null, 'sfdc_ai__DefaultVertexAIGemini31FlashLite');
         Test.stopTest();
         System.assertNotEquals(null, result.querySummary);
     }
@@ -650,7 +650,7 @@ public class AgentforceWorkspaceControllerTest {
         });
         Test.startTest();
         AgentforceWorkspaceModels.ChatResult result =
-            AgentforceWorkspaceController.analyzeResults(json, 'Show nonexistent', 'Previous context', 'sfdc_ai__DefaultVertexAIGemini30Flash');
+            AgentforceWorkspaceController.analyzeResults(json, 'Show nonexistent', 'Previous context', 'sfdc_ai__DefaultVertexAIGemini31FlashLite');
         Test.stopTest();
         System.assertNotEquals(null, result.response);
     }

@@ -129,6 +129,13 @@
   --slds-c-icon-color-foreground-default: currentColor;
 }
 
+.tab-custom-img {
+  width: 1rem;
+  height: 1rem;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
 /* ─── Table ─────────────────────────────────────── */
 
 .table-wrapper {
@@ -152,7 +159,9 @@
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8125rem;
-  table-layout: fixed;
+  /* auto layout lets the browser size columns to content initially;
+     fixed is applied inline via tableStyle once widths are captured */
+  table-layout: auto;
 }
 
 /* Header Row */
@@ -172,6 +181,7 @@
   white-space: nowrap;
   user-select: none;
   position: relative;
+  overflow: hidden;
 }
 
 .th-content {
@@ -362,4 +372,62 @@
 @keyframes skeletonShimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+/* ─── Data Cloud Source Badge ───────────────────── */
+
+.dc-source-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  background: linear-gradient(135deg, rgba(0, 112, 210, 0.04) 0%, rgba(23, 176, 164, 0.04) 100%);
+  border-top: 1px solid rgba(0, 112, 210, 0.12);
+  font-size: 0.6875rem;
+  color: #0054a6;
+}
+
+.dc-source-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #17B0A4;
+  flex-shrink: 0;
+  animation: dcPulse 2.5s ease-in-out infinite;
+}
+
+@keyframes dcPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.8); }
+}
+
+.dc-source-label {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.dc-source-api {
+  font-family: monospace;
+  background: rgba(0, 84, 166, 0.08);
+  padding: 0.1em 0.4em;
+  border-radius: 0.25rem;
+  letter-spacing: 0;
+  font-size: 0.625rem;
+}
+
+.dc-source-api-btn {
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.dc-source-api-btn:hover {
+  background: rgba(0, 84, 166, 0.18);
+  opacity: 0.85;
+}
+
+.dc-source-api-btn:focus-visible {
+  outline: 2px solid #0070d2;
+  outline-offset: 1px;
 }

@@ -65,7 +65,12 @@
             data-index={tab.index}
             onclick={handleTabClick}
           >
-            <lightning-icon icon-name={tab.iconName} size="xx-small" class="tab-icon"></lightning-icon>
+            <template lwc:if={tab.useCustomImage}>
+              <img src={tab.customImageUrl} class="tab-custom-img" alt="Data 360" />
+            </template>
+            <template lwc:else>
+              <lightning-icon icon-name={tab.iconName} size="xx-small" class="tab-icon"></lightning-icon>
+            </template>
             <span class="tab-label">{tab.tabLabel}</span>
           </button>
         </template>
@@ -134,6 +139,20 @@
           <div class="limit-banner">
             <lightning-icon icon-name="utility:info" size="xx-small" class="limit-icon"></lightning-icon>
             <span>{activeTab.limitMessage}</span>
+          </div>
+        </template>
+        <template lwc:if={activeTab.hasDataCloudSource}>
+          <div class="dc-source-footer">
+            <span class="dc-source-dot"></span>
+            <span class="dc-source-label">Salesforce Data 360</span>
+            <span>·</span>
+            <button
+              class="dc-source-api dc-source-api-btn"
+              data-dlo-name={activeTab.dataCloudSource}
+              data-record-id={activeTab.dataCloudRecordId}
+              onclick={handleDloNavigation}
+              title="Open in Data Cloud"
+            >{activeTab.dataCloudSource}</button>
           </div>
         </template>
       </template>

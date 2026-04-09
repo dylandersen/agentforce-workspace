@@ -1,4 +1,4 @@
-public with sharing class BusinessIntelligence {
+global with sharing class BusinessIntelligence {
 
   // Standard objects with hardcoded detailed schemas in the prompt
   private static final Set<String> STANDARD_BI_OBJECTS = new Set<String>{
@@ -22,7 +22,7 @@ public with sharing class BusinessIntelligence {
 
     if (requests == null || requests.isEmpty()) {
       BIResult errorResult = new BIResult();
-      errorResult.analysisResult = 'No query provided for analysis.';
+      errorResult.chartData = makeHtmlResult('No query provided for analysis.');
       results.add(errorResult);
       return results;
     }
@@ -31,7 +31,7 @@ public with sharing class BusinessIntelligence {
 
     if (String.isBlank(request.userQuery)) {
       BIResult errorResult = new BIResult();
-      errorResult.analysisResult = 'A question is required for analysis.';
+      errorResult.chartData = makeHtmlResult('A question is required for analysis.');
       results.add(errorResult);
       return results;
     }
@@ -42,16 +42,39 @@ public with sharing class BusinessIntelligence {
       if (String.isBlank(userName)) {
           userName = UserInfo.getName().split(' ')[0];
       }
+      String resolvedModel = AgentforceWorkspaceAnalysisService.DEFAULT_MODEL;
 
-      // --- Pass 1: NL to SOQL ---
-      String schemaContext = buildSchemaContext();
-      String nlToSoqlPrompt = buildNLtoSOQLPrompt(request.userQuery, userId, userName, schemaContext);
-      String soqlResponse = callModelsAPI(nlToSoqlPrompt);
+      // --- Pass 1: NL to SOQL (enhanced workspace prompt) ---
+      String schemaContext = buildSchemaContext(request.userQuery);
+      String nlToSoqlPrompt = AgentforceWorkspaceAnalysisService.buildNLtoSOQLPrompt(
+          request.userQuery, null, userId, userName, schemaContext);
+      String soqlResponse = AgentforceWorkspaceAnalysisService.callModelsAPI(nlToSoqlPrompt, resolvedModel);
+
+      // Check for record creation action
+      Map<String, Object> createAction = AgentforceWorkspaceRecordCreator.parseCreateAction(soqlResponse);
+      if (createAction != null) {
+          String action = (String) createAction.get('action');
+          AgentforceWorkspaceModels.ChatResult cr;
+          if (action == 'create') {
+              cr = AgentforceWorkspaceRecordCreator.handleCreateConfirm(createAction, userName, resolvedModel);
+          } else if (action == 'create_execute') {
+              cr = AgentforceWorkspaceRecordCreator.handleCreateExecute(createAction, userName, resolvedModel);
+          } else {
+              cr = null;
+          }
+          if (cr != null) {
+              BIResult result = new BIResult();
+              result.chartData = makeHtmlResult(cr.response);
+              results.add(result);
+              return results;
+          }
+      }
+
       List<QueryPlan> plans = parseAndValidateSOQL(soqlResponse);
 
       if (plans.isEmpty()) {
         BIResult errorResult = new BIResult();
-        errorResult.analysisResult = 'Unable to generate a valid query for your question. Please try rephrasing.';
+        errorResult.chartData = makeHtmlResult('Unable to generate a valid query for your question. Please try rephrasing.');
         results.add(errorResult);
         return results;
       }
@@ -59,27 +82,190 @@ public with sharing class BusinessIntelligence {
       // Execute the validated queries
       List<QueryExecution> executions = executeQueries(plans);
 
+      // --- Retry if ALL queries failed ---
+      Boolean allFailed = true;
+      List<String> errorMessages = new List<String>();
+      for (QueryExecution exec : executions) {
+          if (exec.error == null) {
+              allFailed = false;
+              break;
+          }
+          errorMessages.add(exec.error + ' | SOQL: ' + exec.soql);
+      }
+      if (allFailed && !errorMessages.isEmpty()) {
+          String retryPrompt = nlToSoqlPrompt
+              + '\n\nIMPORTANT: Your previous queries ALL failed with these errors:\n'
+              + String.join(errorMessages, '\n')
+              + '\n\nFix the SOQL errors and try again. Common fixes:'
+              + '\n- Do not use GROUP BY on non-groupable fields (Subject, Description, AnnualRevenue, etc.)'
+              + '\n- Use aggregate functions (SUM, AVG, MAX) only with GROUP BY on groupable fields'
+              + '\n- For ranking/sorting, use ORDER BY instead of GROUP BY'
+              + '\n- For activity analysis, GROUP BY ActivityType, Status, or TaskSubtype — not Subject'
+              + '\n- Ensure field names exist on the queried object'
+              + '\nGenerate corrected SOQL now.';
+          String retryResponse = AgentforceWorkspaceAnalysisService.callModelsAPI(retryPrompt, resolvedModel);
+          if (String.isNotBlank(retryResponse) && !retryResponse.trim().startsWith('<p>Error')) {
+              List<QueryPlan> retryPlans = parseAndValidateSOQL(retryResponse);
+              if (!retryPlans.isEmpty()) {
+                  executions = executeQueries(retryPlans);
+              }
+          }
+      }
+
+      // --- Consolidated data collection ---
+      Set<Id> allOppIds = AgentforceWorkspaceQueryService.collectAllOppIds(executions);
+      Set<String> objectsWithRecords = AgentforceWorkspaceQueryService.findObjectsWithRecords(executions);
+      Map<String, List<SObject>> supplementaryRecords =
+          AgentforceWorkspaceQueryService.runSupplementaryQueries(executions, objectsWithRecords);
+
+      if (supplementaryRecords.containsKey('Opportunity')) {
+          for (SObject rec : supplementaryRecords.get('Opportunity')) {
+              if (rec.Id != null) allOppIds.add(rec.Id);
+          }
+      }
+
+      Map<Id, Opportunity> oppAccountMap = AgentforceWorkspaceQueryService.lookupOppAccounts(allOppIds);
+      Map<String, List<String>> recordLinks =
+          AgentforceWorkspaceLinkService.collectRecordLinks(executions, oppAccountMap, supplementaryRecords);
+
       // --- Pass 2: Results to BI Analysis ---
-      String analysisPrompt = buildAnalysisPrompt(request.userQuery, userName, executions);
-      String htmlResponse = callModelsAPI(analysisPrompt);
+      AgentforceWorkspaceModels.ExecutionData data = new AgentforceWorkspaceModels.ExecutionData();
+      data.queryResultsText = AgentforceWorkspaceQueryService.formatQueryResults(executions);
+      data.recordLinks = recordLinks;
+      data.userName = userName;
+      data.userFullName = UserInfo.getName();
+      data.hasAnyResults = AgentforceWorkspaceQueryService.checkHasAnyResults(executions);
+
+      String analysisPrompt = AgentforceWorkspaceAnalysisService.buildAnalysisPromptFromData(
+          data, request.userQuery, null);
+      String rawResponse = AgentforceWorkspaceAnalysisService.callModelsAPI(analysisPrompt, resolvedModel);
+
+      // Inject record links (protect EMAIL_DRAFT from corruption)
+      String emailDraftBlock = '';
+      Integer edStart = rawResponse.indexOf('<EMAIL_DRAFT>');
+      Integer edEnd = rawResponse.indexOf('</EMAIL_DRAFT>');
+      if (edStart != -1 && edEnd != -1 && edEnd > edStart) {
+          emailDraftBlock = rawResponse.substring(edStart, edEnd + 14);
+          rawResponse = rawResponse.substring(0, edStart)
+              + '___EMAIL_DRAFT_PLACEHOLDER___'
+              + rawResponse.substring(edEnd + 14);
+      }
+      rawResponse = AgentforceWorkspaceLinkService.safeInjectRecordLinks(rawResponse, recordLinks);
+      if (String.isNotBlank(emailDraftBlock)) {
+          rawResponse = rawResponse.replace('___EMAIL_DRAFT_PLACEHOLDER___', emailDraftBlock);
+      }
+
+      // Extract chart JSON before cleaning strips it
+      String chartJson = null;
+      Integer cOpen = rawResponse.indexOf('<CHART>');
+      Integer cClose = rawResponse.indexOf('</CHART>');
+      if (cOpen != -1 && cClose != -1 && cClose > cOpen) {
+          chartJson = rawResponse.substring(cOpen + 7, cClose).trim();
+      }
+
+      // Clean up response for Agentforce
+      rawResponse = cleanResponseForAgent(rawResponse);
 
       BIResult result = new BIResult();
-      result.analysisResult = htmlResponse;
+      result.chartData = makeHtmlResult(rawResponse);
+      result.chartData.chartJson = chartJson;
       results.add(result);
       return results;
     } catch (Exception e) {
       System.debug(LoggingLevel.ERROR, 'Error in BusinessIntelligence.analyze: ' + e.getMessage());
       System.debug(LoggingLevel.ERROR, 'Stack Trace: ' + e.getStackTraceString());
       BIResult errorResult = new BIResult();
-      errorResult.analysisResult = 'Error analyzing your question: ' + e.getMessage()
-        + '\n\nPlease check debug logs for more details.';
+      errorResult.chartData = makeHtmlResult('Error analyzing your question: ' + e.getMessage()
+        + '\n\nPlease check debug logs for more details.');
       results.add(errorResult);
       return results;
     }
   }
 
   // ═══════════════════════════════════════════════
-  // Pass 1: NL → SOQL
+  // Response Cleanup for Agentforce
+  // ═══════════════════════════════════════════════
+
+  /**
+   * Clean response for Agentforce output:
+   * - Convert EMAIL_DRAFT blocks to readable inline HTML
+   * - Strip CHART blocks (Agentforce cannot render them)
+   * - Strip SUGGESTIONS blocks (agent manages follow-ups itself)
+   */
+  private static AnalyticsChartResult makeHtmlResult(String html) {
+      AnalyticsChartResult r = new AnalyticsChartResult();
+      r.analysisHtml = html;
+      return r;
+  }
+
+  @TestVisible
+  private static String cleanResponseForAgent(String response) {
+      if (String.isBlank(response)) return response;
+
+      // Convert EMAIL_DRAFT to readable HTML
+      Integer emailOpen = response.indexOf('<EMAIL_DRAFT>');
+      Integer emailClose = response.indexOf('</EMAIL_DRAFT>');
+      if (emailOpen != -1 && emailClose != -1 && emailClose > emailOpen) {
+          String emailJson = response.substring(emailOpen + 13, emailClose).trim();
+          String emailHtml = formatEmailDraftAsHtml(emailJson);
+          response = response.substring(0, emailOpen) + emailHtml + response.substring(emailClose + 14);
+      }
+
+      // Strip CHART blocks
+      Integer chartOpen = response.indexOf('<CHART>');
+      Integer chartClose = response.indexOf('</CHART>');
+      if (chartOpen != -1 && chartClose != -1 && chartClose > chartOpen) {
+          response = response.substring(0, chartOpen) + response.substring(chartClose + 8);
+      }
+
+      // Strip SUGGESTIONS blocks
+      Integer sugOpen = response.indexOf('<SUGGESTIONS>');
+      Integer sugClose = response.indexOf('</SUGGESTIONS>');
+      if (sugOpen != -1 && sugClose != -1 && sugClose > sugOpen) {
+          response = response.substring(0, sugOpen);
+      }
+
+      return response.trim();
+  }
+
+  private static String formatEmailDraftAsHtml(String emailJson) {
+      try {
+          Map<String, Object> em = (Map<String, Object>) JSON.deserializeUntyped(emailJson);
+          String toName = (String) em.get('toName');
+          String toAddress = (String) em.get('toAddress');
+          String subject = (String) em.get('subject');
+          String body = (String) em.get('body');
+
+          List<String> html = new List<String>();
+          html.add('<h2>Draft Email</h2>');
+          if (String.isNotBlank(toName)) {
+              String toLine = '<p><b>To:</b> ' + toName;
+              if (String.isNotBlank(toAddress)) toLine += ' (' + toAddress + ')';
+              toLine += '</p>';
+              html.add(toLine);
+          }
+          if (String.isNotBlank(subject)) {
+              html.add('<p><b>Subject:</b> ' + subject + '</p>');
+          }
+          html.add('<hr/>');
+          if (String.isNotBlank(body)) {
+              List<String> paragraphs = body.split('\n\n');
+              for (String p : paragraphs) {
+                  String trimmed = p.trim();
+                  if (String.isNotBlank(trimmed)) {
+                      html.add('<p>' + trimmed.replace('\n', '<br/>') + '</p>');
+                  }
+              }
+          }
+          return String.join(html, '');
+      } catch (Exception e) {
+          System.debug(LoggingLevel.WARN, 'Failed to format email draft: ' + e.getMessage());
+          return '';
+      }
+  }
+
+  // ═══════════════════════════════════════════════
+  // Schema Context (shared with AgentforceWorkspaceController)
   // ═══════════════════════════════════════════════
 
   /**
@@ -87,6 +273,15 @@ public with sharing class BusinessIntelligence {
    */
   @TestVisible
   public static String buildSchemaContext() {
+    return buildSchemaContext(null);
+  }
+
+  /**
+   * Build schema context with optional user message so explicitly named custom
+   * objects (e.g., My_Object__c) are always included in the prompt.
+   */
+  @TestVisible
+  public static String buildSchemaContext(String userMessage) {
     List<String> parts = new List<String>();
     parts.add('## SALESFORCE SCHEMA\n\n');
 
@@ -194,14 +389,46 @@ public with sharing class BusinessIntelligence {
     // --- Dynamic discovery of custom objects ---
     parts.add('### Custom Objects\n\n');
     Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
-    Integer customCount = 0;
+    Map<String, String> customObjByLower = new Map<String, String>();
     for (String objName : globalDescribe.keySet()) {
-      if (objName.endsWith('__c') && customCount < 30) {
-        Schema.DescribeSObjectResult describeResult = globalDescribe.get(objName).getDescribe();
-        if (describeResult.isQueryable() && describeResult.isAccessible()) {
-          parts.add('**' + objName + '** — ' + describeResult.getLabel() + '\n');
-          customCount++;
+      if (objName.endsWith('__c')) {
+        customObjByLower.put(objName.toLowerCase(), objName);
+      }
+    }
+
+    // Prioritize explicitly requested custom objects from the user message.
+    Set<String> prioritizedCustomObjects = new Set<String>();
+    if (String.isNotBlank(userMessage)) {
+      Matcher matcher = Pattern.compile('(?i)([A-Za-z][A-Za-z0-9_]*__c)').matcher(userMessage);
+      while (matcher.find()) {
+        String rawName = matcher.group(1);
+        String normalized = rawName != null ? rawName.toLowerCase() : null;
+        if (String.isNotBlank(normalized) && customObjByLower.containsKey(normalized)) {
+          prioritizedCustomObjects.add(customObjByLower.get(normalized));
         }
+      }
+    }
+
+    List<String> orderedCustomObjects = new List<String>();
+    orderedCustomObjects.addAll(prioritizedCustomObjects);
+
+    List<String> remainingCustomObjects = new List<String>();
+    for (String objName : customObjByLower.values()) {
+      if (!prioritizedCustomObjects.contains(objName)) {
+        remainingCustomObjects.add(objName);
+      }
+    }
+    remainingCustomObjects.sort();
+    orderedCustomObjects.addAll(remainingCustomObjects);
+
+    Integer customCount = 0;
+    Integer maxCustomObjectsInPrompt = 60;
+    for (String objName : orderedCustomObjects) {
+      if (customCount >= maxCustomObjectsInPrompt) break;
+      Schema.DescribeSObjectResult describeResult = globalDescribe.get(objName).getDescribe();
+      if (describeResult.isQueryable() && describeResult.isAccessible()) {
+        parts.add('**' + objName + '** — ' + describeResult.getLabel() + '\n');
+        customCount++;
       }
     }
     if (customCount == 0) {
@@ -211,59 +438,9 @@ public with sharing class BusinessIntelligence {
     return String.join(parts, '');
   }
 
-  /**
-   * Build the NL-to-SOQL prompt for Pass 1
-   */
-  @TestVisible
-  private static String buildNLtoSOQLPrompt(String userQuery, String userId,
-                                             String userName, String schemaContext) {
-    List<String> parts = new List<String>();
-
-    parts.add('You are a Salesforce SOQL expert. Your ONLY job is to convert a natural language question into one or more SOQL queries.\n\n');
-
-    parts.add('## RULES\n');
-    parts.add('1. Generate ONLY SELECT queries. Never generate INSERT, UPDATE, DELETE, or UPSERT.\n');
-    parts.add('2. Every query MUST include a LIMIT clause. Maximum LIMIT is ' + MAX_QUERY_LIMIT + '.\n');
-    parts.add('3. Only query objects from the schema provided below.\n');
-    parts.add('4. Use the running user\'s ID for "my" queries (e.g., WHERE OwnerId = \'' + userId + '\').\n');
-    parts.add('5. Today\'s date is ' + Date.today().format() + '. Use this for relative date calculations.\n');
-    parts.add('6. For date ranges, prefer Salesforce date literals when possible: TODAY, YESTERDAY, THIS_WEEK, LAST_WEEK, THIS_MONTH, LAST_MONTH, THIS_QUARTER, LAST_QUARTER, THIS_YEAR, LAST_YEAR, NEXT_N_DAYS:n, LAST_N_DAYS:n, NEXT_N_MONTHS:n, LAST_N_MONTHS:n.\n');
-    parts.add('7. Use aggregate functions (COUNT, SUM, AVG, MIN, MAX) with GROUP BY when the question asks for totals, averages, or grouped data.\n');
-    parts.add('   IMPORTANT: Never GROUP BY long text or non-groupable fields (Subject, Description, Body, Comment, MessageBody, etc.). For activity analysis, GROUP BY ActivityType, Status, or TaskSubtype instead. Use ORDER BY for sorting by text fields.\n');
-    parts.add('8. For questions requiring data from multiple objects, generate multiple queries.\n');
-    parts.add('9. Always include relevant fields that help answer the question — don\'t just return IDs.\n');
-    parts.add('10. Prefer ORDER BY on relevant fields (e.g., CloseDate, Amount, CreatedDate) to surface the most useful data.\n');
-    parts.add('11. Do NOT use SOQL reserved words as aliases.\n');
-    parts.add('12. For Opportunity stages use the exact stage names from the schema.\n');
-    parts.add('13. CRITICAL — NEVER use OR with subqueries: SOQL does not allow semi-join sub-selects with the OR operator. '
-      + 'If you need records matching EITHER condition (e.g., IssueId IN (SELECT...) OR RelatedIssueId IN (SELECT...)), '
-      + 'generate TWO separate queries instead of one. Each query uses a single IN (SELECT...) — never combine them with OR.\n');
-    parts.add('14. IMPORTANT — ALWAYS PAIR detail queries with aggregate counts:\n');
-    parts.add('    For EVERY detail SELECT query you generate, ALSO generate a matching COUNT() aggregate query with the same WHERE clause.\n');
-    parts.add('    Example: if you write SELECT Name, Amount FROM Opportunity WHERE OwnerId = \'...\' AND IsClosed = false LIMIT 200,\n');
-    parts.add('    also write SELECT COUNT() FROM Opportunity WHERE OwnerId = \'...\' AND IsClosed = false\n');
-    parts.add('    The detail query is capped at 200 rows, but the COUNT gives the TRUE total across all records.\n');
-    parts.add('    Put the COUNT query FIRST so the analyst sees the accurate total before the detail rows.\n');
-    parts.add('    For grouped aggregates (SUM/AVG with GROUP BY), a separate COUNT is not needed.\n');
-    parts.add('15. CONTACT ROLES ON OPPORTUNITIES — When the user asks about decision makers, contact roles, stakeholders, or contacts on opportunities, you MUST generate an OpportunityContactRole query in addition to any Opportunity query. Use: SELECT Id, OpportunityId, ContactId, Role, IsPrimary, Contact.Name, Contact.Email, Opportunity.Name, Opportunity.Amount FROM OpportunityContactRole WHERE OpportunityId IN (SELECT Id FROM Opportunity WHERE ...) [AND Role = \'Decision Maker\' when user asks for decision makers]. Include the COUNT query for OpportunityContactRole as well.\n\n');
-
-    parts.add('## RUNNING USER CONTEXT\n');
-    parts.add('- User ID: ' + userId + '\n');
-    parts.add('- User Name: ' + userName + '\n');
-    parts.add('- When the user says "my", "mine", or "I", filter by OwnerId = \'' + userId + '\'\n\n');
-
-    parts.add(schemaContext);
-
-    parts.add('\n## USER QUESTION\n');
-    parts.add(userQuery + '\n\n');
-
-    parts.add('## OUTPUT FORMAT\n');
-    parts.add('Return ONLY a JSON object with no additional text, no markdown code blocks, no explanation. Format:\n');
-    parts.add('{"queries":[{"purpose":"Brief description","soql":"SELECT ... OR FIND {...} RETURNING ..."}]}\n');
-    parts.add('Use SOQL (SELECT) for most queries. Use SOSL (FIND) only for Incident/Problem/Case "related to X" when you need to search Description (long text).\n');
-
-    return String.join(parts, '');
-  }
+  // ═══════════════════════════════════════════════
+  // SOQL Parsing & Validation (shared with AgentforceWorkspaceController)
+  // ═══════════════════════════════════════════════
 
   /**
    * Parse LLM response and validate each SOQL query
@@ -517,6 +694,10 @@ public with sharing class BusinessIntelligence {
     return Pattern.compile('\\b(COUNT|SUM|AVG|MIN|MAX)\\s*\\(').matcher(upperSoql).find();
   }
 
+  // ═══════════════════════════════════════════════
+  // Query Execution (shared with AgentforceWorkspaceController)
+  // ═══════════════════════════════════════════════
+
   /**
    * Execute validated SOQL queries as the running user
    */
@@ -565,195 +746,19 @@ public with sharing class BusinessIntelligence {
   }
 
   // ═══════════════════════════════════════════════
-  // Pass 2: Results → BI Analysis
-  // ═══════════════════════════════════════════════
-
-  /**
-   * Build the analysis prompt for Pass 2
-   */
-  @TestVisible
-  private static String buildAnalysisPrompt(String userQuery, String userName,
-                                             List<QueryExecution> executions) {
-    List<String> parts = new List<String>();
-
-    parts.add('You are a senior business analyst working inside a Salesforce CRM. '
-      + 'A sales or service professional named ' + userName + ' asked a business intelligence question. '
-      + 'You have access to the query results below. Provide a rich, insightful analysis.\n\n');
-
-    parts.add('**Today\'s date:** ' + Datetime.now().format('MMMM d, yyyy') + '\n\n');
-
-    parts.add('## ORIGINAL QUESTION\n');
-    parts.add(userQuery + '\n\n');
-
-    parts.add('## QUERY RESULTS\n\n');
-
-    Boolean hasAnyResults = false;
-    for (QueryExecution exec : executions) {
-      parts.add('### ' + exec.purpose + '\n');
-      parts.add('**Query:** `' + exec.soql + '`\n');
-
-      if (String.isNotBlank(exec.error)) {
-        parts.add('**Error:** ' + exec.error + '\n\n');
-        continue;
-      }
-
-      // Handle COUNT() queries — they return a single integer, not rows
-      if (exec.countResult != null) {
-        hasAnyResults = true;
-        parts.add('**Total Count:** ' + exec.countResult + '\n\n');
-        continue;
-      }
-
-      if (exec.results == null || exec.results.isEmpty()) {
-        parts.add('**Results:** No records found.\n\n');
-        continue;
-      }
-
-      hasAnyResults = true;
-      if (exec.limitReached) {
-        parts.add('**Results:** ' + exec.results.size() + ' record(s) shown (display cap reached — use the COUNT query above for the accurate total)\n');
-      } else {
-        parts.add('**Results:** ' + exec.results.size() + ' record(s)\n');
-      }
-
-      // Serialize results to a readable format
-      for (Integer i = 0; i < Math.min(exec.results.size(), MAX_QUERY_LIMIT); i++) {
-        Map<String, Object> fields = exec.results[i].getPopulatedFieldsAsMap();
-        List<String> fieldParts = new List<String>();
-        for (String fieldName : fields.keySet()) {
-          Object val = fields.get(fieldName);
-          if (val instanceof SObject) {
-            // Handle relationship fields (e.g., Account.Name)
-            Map<String, Object> relFields = ((SObject) val).getPopulatedFieldsAsMap();
-            for (String relField : relFields.keySet()) {
-              fieldParts.add(fieldName + '.' + relField + ': ' + String.valueOf(relFields.get(relField)));
-            }
-          } else {
-            fieldParts.add(fieldName + ': ' + String.valueOf(val));
-          }
-        }
-        parts.add((i + 1) + '. ' + String.join(fieldParts, ' | ') + '\n');
-      }
-      parts.add('\n');
-    }
-
-    // Output format instructions
-    parts.add('## OUTPUT FORMAT\n\n');
-    parts.add('**CRITICAL:** Return clean, compact HTML. No markdown. No code blocks. No extra blank lines between tags.\n\n');
-
-    parts.add('**VOICE & TONE:**\n');
-    parts.add('- You are a helpful business analyst talking to a colleague. Be warm, direct, and insightful.\n');
-    parts.add('- Address the user by first name (' + userName + ').\n');
-    parts.add('- Write in plain business English. Sound like a smart coworker, not a database.\n');
-    parts.add('- Focus on WHAT the data means and WHY it matters, not HOW you got the data.\n\n');
-
-    parts.add('**ABSOLUTELY DO NOT INCLUDE:**\n');
-    parts.add('- Salesforce record IDs (e.g., 005Hu00000...) — never show IDs to the user\n');
-    parts.add('- Field API names (e.g., TaskSubtype, OwnerId, StageName) — use plain English equivalents\n');
-    parts.add('- SOQL date literals (e.g., LAST_MONTH, NEXT_N_DAYS) — use real dates and natural language\n');
-    parts.add('- Query methodology explanations (e.g., "records were filtered by...", "verified under User ID...")\n');
-    parts.add('- Any mention of SOQL, queries, the Task object, record types, or filtering logic\n');
-    parts.add('- Self-referential commentary about how the analysis was performed\n');
-    parts.add('- The word "record" when referring to deals, cases, calls, etc. — say "deal", "case", "call" instead\n\n');
-
-    parts.add('**FORMATTING RULES:**\n');
-    parts.add('- Use <b>bold</b> for important numbers, dollar amounts, dates, names, and statuses\n');
-    parts.add('- Keep HTML tight — no newlines between tags. Write tags inline: <h2>Title</h2><ul><li>Item</li></ul>\n');
-    parts.add('- Use <hr/> sparingly — only between major sections\n');
-    parts.add('- Keep bullet points concise — 1 line each, no paragraphs inside list items\n\n');
-
-    parts.add('**REQUIRED STRUCTURE:**\n\n');
-
-    if (!hasAnyResults) {
-      parts.add('<h1>Title</h1>');
-      parts.add('<p>[Explain that no matching data was found. Suggest alternative questions the user could try.]</p>');
-    } else {
-      parts.add('<h1>[Short title summarizing the answer]</h1>');
-      parts.add('<p>[1-2 sentence summary directly answering the question with key numbers bolded]</p>');
-      parts.add('<hr/>');
-      parts.add('<h2>Key Findings</h2>');
-      parts.add('<ul>');
-      parts.add('<li>[Insight about the data — what stands out, what matters]</li>');
-      parts.add('<li>[Another insight with specific numbers bolded]</li>');
-      parts.add('<li>[Third insight if applicable]</li>');
-      parts.add('</ul>');
-      parts.add('<hr/>');
-      parts.add('<h2>Detailed Breakdown</h2>');
-      parts.add('[Present the actual data the user asked about. Use the most natural format:');
-      parts.add(' - Lists of items: <ul> with each as a <li>');
-      parts.add(' - Comparisons: side-by-side');
-      parts.add(' - Prioritization: ranked with rationale');
-      parts.add('Include names, amounts, dates, stages — the details that help the user take action.]');
-      parts.add('<hr/>');
-      parts.add('<h2>Recommendations</h2>');
-      parts.add('<ul>');
-      parts.add('<li>[Specific action the user should take based on the data]</li>');
-      parts.add('<li>[Another action — omit if not applicable]</li>');
-      parts.add('</ul>');
-    }
-
-    parts.add('\nFINAL REMINDERS:\n');
-    parts.add('- HTML only. No markdown. No code blocks.\n');
-    parts.add('- No inline CSS, no <div> tags, no class attributes.\n');
-    parts.add('- No fabricated data — only reference what is in the query results.\n');
-    parts.add('- Replace ALL [placeholder] text with real analysis.\n');
-    parts.add('- NEVER expose technical details (IDs, field names, query logic) to the user.\n');
-    parts.add('- Be specific with real numbers, names, and dates from the data.\n');
-
-    return String.join(parts, '');
-  }
-
-  // ═══════════════════════════════════════════════
-  // Models API
-  // ═══════════════════════════════════════════════
-
-  /**
-   * Calls the Salesforce Models API (Gemini 3.0 Flash)
-   */
-  private static String callModelsAPI(String promptText) {
-    try {
-      String modelName = 'sfdc_ai__DefaultVertexAIGemini30Flash';
-
-      aiplatform.ModelsAPI.createGenerations_Request request = new aiplatform.ModelsAPI.createGenerations_Request();
-      request.modelName = modelName;
-
-      aiplatform.ModelsAPI_GenerationRequest requestBody = new aiplatform.ModelsAPI_GenerationRequest();
-      request.body = requestBody;
-      requestBody.prompt = promptText;
-
-      aiplatform.ModelsAPI modelsAPI = new aiplatform.ModelsAPI();
-      aiplatform.ModelsAPI.createGenerations_Response response = modelsAPI.createGenerations(request);
-
-      if (response.Code200 != null && response.Code200.generation != null) {
-        return response.Code200.generation.generatedText;
-      } else {
-        return 'No response received from AI. Please verify Agentforce Generative AI is enabled in your org.';
-      }
-    } catch (aiplatform.ModelsAPI.createGenerations_ResponseException e) {
-      System.debug(LoggingLevel.ERROR, 'Models API Response Exception: ' + e.getMessage());
-      System.debug(LoggingLevel.ERROR, 'Response code: ' + e.responseCode);
-      return 'Error during AI analysis: ' + e.getMessage()
-        + '\n\nPlease ensure Agentforce AI Models are enabled in Setup.';
-    } catch (Exception e) {
-      System.debug(LoggingLevel.ERROR, 'Models API Error: ' + e.getMessage());
-      System.debug(LoggingLevel.ERROR, 'Stack Trace: ' + e.getStackTraceString());
-      return 'Unexpected error during AI analysis: ' + e.getMessage()
-        + '\n\nPlease check debug logs for more details.';
-    }
-  }
-
-  // ═══════════════════════════════════════════════
   // Inner Classes
   // ═══════════════════════════════════════════════
 
-  public class BIRequest {
+  @JsonAccess(serializable='always' deserializable='always')
+  global class BIRequest {
     @InvocableVariable(required=true label='User Query')
-    public String userQuery;
+    global String userQuery;
   }
 
-  public class BIResult {
-    @InvocableVariable(label='Analysis Result')
-    public String analysisResult;
+  @JsonAccess(serializable='always' deserializable='always')
+  global class BIResult {
+    @InvocableVariable(label='Chart Data')
+    global AnalyticsChartResult chartData;
   }
 
   @TestVisible

@@ -83,10 +83,32 @@ public with sharing class AgentforceWorkspaceModels {
         @AuraEnabled public String executionDataJson;
         @AuraEnabled public String querySummary;
         @AuraEnabled public Boolean hasResults;
+        @AuraEnabled public String intentLabel;
+        @AuraEnabled public Integer reasoningAttempts;
         public QueryResult() {
             this.recordTabs = new List<RecordTab>();
             this.hasResults = false;
+            this.reasoningAttempts = 0;
         }
+    }
+
+    /** Result of the lightweight intent classification call (Pass 0). */
+    public class IntentResult {
+        @AuraEnabled public String intent;        // QUERY, CREATE, UPDATE, COMPARE, COMPOSE, CLARIFY, FOLLOWUP
+        @AuraEnabled public String plan;          // One-sentence description of what to do
+        @AuraEnabled public Decimal confidence;   // 0.0–1.0
+        @AuraEnabled public String clarification; // If intent=CLARIFY, the question to ask the user
+    }
+
+    /** Internal result from the reasoning engine — not sent to LWC directly. */
+    public class ReasoningResult {
+        public Boolean success = false;
+        public List<BusinessIntelligence.QueryExecution> executions;
+        public Map<String, Object> createAction;
+        public IntentResult classifiedIntent;
+        public String failureExplanation;
+        public List<String> alternativeSuggestions;
+        public Integer attemptsUsed = 0;
     }
 
     /** Tab of records for a single object type in the list view. */
@@ -98,6 +120,10 @@ public with sharing class AgentforceWorkspaceModels {
         @AuraEnabled public Integer totalCount;  // from COUNT() query — null if not available
         @AuraEnabled public List<ColumnDef> columns;
         @AuraEnabled public List<Map<String, String>> rows;
+        /** When set, the LWC shows a "Salesforce Data 360 · <source>" badge below the table. */
+        @AuraEnabled public String dataCloudSource;
+        /** Salesforce record ID of the DataLakeObject — used to navigate to its detail page. */
+        @AuraEnabled public String dataCloudRecordId;
         public RecordTab() {
             this.columns = new List<ColumnDef>();
             this.rows = new List<Map<String, String>>();

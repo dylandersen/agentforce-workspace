@@ -790,7 +790,7 @@ public class AgentforceWorkspaceServiceTest {
     @isTest
     static void testCallModelsAPI_ReturnsErrorInTest() {
         Test.startTest();
-        String result = AgentforceWorkspaceAnalysisService.callModelsAPI('test prompt', 'sfdc_ai__DefaultVertexAIGemini30Flash');
+        String result = AgentforceWorkspaceAnalysisService.callModelsAPI('test prompt', 'sfdc_ai__DefaultVertexAIGemini31FlashLite');
         Test.stopTest();
         // In test context, the managed package call will fail — we should get an error string
         System.assert(String.isNotBlank(result));
