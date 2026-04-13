@@ -150,6 +150,8 @@ global with sharing class BusinessIntelligence {
               + '___EMAIL_DRAFT_PLACEHOLDER___'
               + rawResponse.substring(edEnd + 14);
       }
+      rawResponse = AgentforceWorkspaceAnalysisService.enforceRunningUserIdentity(
+          rawResponse, data.userName, data.userFullName);
       rawResponse = AgentforceWorkspaceLinkService.safeInjectRecordLinks(rawResponse, recordLinks);
       if (String.isNotBlank(emailDraftBlock)) {
           rawResponse = rawResponse.replace('___EMAIL_DRAFT_PLACEHOLDER___', emailDraftBlock);
@@ -289,7 +291,7 @@ global with sharing class BusinessIntelligence {
     parts.add('### Standard Objects\n\n');
 
     parts.add('**Account** — Company/organization record\n');
-    parts.add('Key fields: Id, Name, Type, Industry, AnnualRevenue, NumberOfEmployees, OwnerId, BillingCity, BillingState, BillingCountry, Phone, Website, Description, CreatedDate, LastModifiedDate, ParentId\n\n');
+    parts.add('Key fields: Id, Name, Type, Industry, AnnualRevenue, NumberOfEmployees, OwnerId, LastActivityDate, BillingCity, BillingState, BillingCountry, Phone, Website, Description, CreatedDate, LastModifiedDate, ParentId\n\n');
 
     parts.add('**Contact** — Individual person record\n');
     parts.add('Key fields: Id, Name, FirstName, LastName, Email, Phone, MobilePhone, Title, Department, AccountId, OwnerId, MailingCity, MailingState, MailingCountry, LeadSource, CreatedDate, LastModifiedDate\n\n');
@@ -386,7 +388,16 @@ global with sharing class BusinessIntelligence {
     parts.add('**ProblemRelatedItem** — Links Problem to related Asset\n');
     parts.add('Key fields: Id, ProblemId, AssetId, Comment, ImpactLevel, ImpactType, Name, CreatedDate\n\n');
 
-    // --- Dynamic discovery of custom objects ---
+    // --- Compliance Document (hardcoded for NL-to-SOQL accuracy) ---
+    parts.add('**Compliance_Document__c** — Compliance/legal agreement tracking for school districts (DPAs, MSAs, FERPA/COPPA docs, security questionnaires)\n');
+    parts.add('Key fields: Id, Name, Document_Title__c, Document_Type__c, District_Account__c, State__c, Status__c, Processing_Status__c, Expiration_Date__c, Effective_Date__c, Renewal_Date__c, Priority__c, Student_Count__c, Products_Covered__c, Data_Categories__c, FERPA_Compliant__c, COPPA_Compliant__c, Data_Deletion_Clause__c, Breach_Notification_Days__c, Data_Retention_Period__c, Security_Standards__c, AI_Confidence_Score__c, AI_Summary__c, Missing_Clauses__c, AI_Processed_Date__c, Related_Opportunity__c, District_Contact__c, Assigned_To__c, Notes__c\n');
+    parts.add('Relationships: District_Account__c -> Account (school district), Related_Opportunity__c -> Opportunity, District_Contact__c -> Contact, Assigned_To__c -> User\n');
+    parts.add('Common statuses: Draft, Pending Review, Under Legal Review, Pending District Signature, Active, Expired, Renewal Required, Superseded\n');
+    parts.add('Processing statuses: Not Processed, Processing, Processed, Needs Human Review, Processing Failed\n');
+    parts.add('Document types: DPA (SDPC National), DPA (State-Specific), DPA (District Custom), MSA, FERPA Compliance Agreement, COPPA Consent, Licensing Agreement, State Addendum, Security Questionnaire, VPAT/ACR\n');
+    parts.add('Query patterns: Use District_Account__r.Name for district name. Filter by State__c for state-specific queries. Use Expiration_Date__c < TODAY + N for expiring docs. Use Processing_Status__c for AI processing status. AI_Confidence_Score__c is a Percent (0-1 range in SOQL, display as percentage).\n\n');
+
+    // --- Dynamic discovery of custom objects (enriched via SchemaService) ---
     parts.add('### Custom Objects\n\n');
     Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
     Map<String, String> customObjByLower = new Map<String, String>();
@@ -396,7 +407,8 @@ global with sharing class BusinessIntelligence {
       }
     }
 
-    // Prioritize explicitly requested custom objects from the user message.
+    // Identify custom objects explicitly referenced in the user message —
+    // these get FULL field-level schema context so the LLM generates accurate SOQL.
     Set<String> prioritizedCustomObjects = new Set<String>();
     if (String.isNotBlank(userMessage)) {
       Matcher matcher = Pattern.compile('(?i)([A-Za-z][A-Za-z0-9_]*__c)').matcher(userMessage);
@@ -409,9 +421,15 @@ global with sharing class BusinessIntelligence {
       }
     }
 
-    List<String> orderedCustomObjects = new List<String>();
-    orderedCustomObjects.addAll(prioritizedCustomObjects);
+    // For prioritized objects, include FULL field-level context via SchemaService
+    for (String objName : prioritizedCustomObjects) {
+      String richContext = AgentforceWorkspaceSchemaService.buildCustomObjectSchemaContext(objName);
+      if (String.isNotBlank(richContext)) {
+        parts.add(richContext);
+      }
+    }
 
+    // Remaining custom objects get label-only listings (catalog for the LLM to reference)
     List<String> remainingCustomObjects = new List<String>();
     for (String objName : customObjByLower.values()) {
       if (!prioritizedCustomObjects.contains(objName)) {
@@ -419,11 +437,10 @@ global with sharing class BusinessIntelligence {
       }
     }
     remainingCustomObjects.sort();
-    orderedCustomObjects.addAll(remainingCustomObjects);
 
-    Integer customCount = 0;
+    Integer customCount = prioritizedCustomObjects.size();
     Integer maxCustomObjectsInPrompt = 60;
-    for (String objName : orderedCustomObjects) {
+    for (String objName : remainingCustomObjects) {
       if (customCount >= maxCustomObjectsInPrompt) break;
       Schema.DescribeSObjectResult describeResult = globalDescribe.get(objName).getDescribe();
       if (describeResult.isQueryable() && describeResult.isAccessible()) {

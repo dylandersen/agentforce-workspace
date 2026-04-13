@@ -82,6 +82,38 @@ public class AgentforceWorkspaceControllerTest {
         System.assertEquals('create_execute', result.get('action'));
     }
 
+    @isTest
+    static void testBuildPrompt_IncludesPendingBulkUpdateInstructionsAndExamples() {
+        String prompt = AgentforceWorkspaceAnalysisService.buildNLtoSOQLPrompt(
+            'update these opportunities to close this year',
+            '[SYSTEM: Pending bulk update — Object: Opportunity, Count: 2, Record IDs: 006x,006y, Fields: CloseDate=2026-12-31]',
+            UserInfo.getUserId(),
+            'Dylan',
+            '## SCHEMA',
+            new AgentforceWorkspaceModels.IntentResult()
+        );
+
+        System.assert(prompt.contains('PENDING BULK UPDATE — When the conversation history contains a line "[SYSTEM: Pending bulk update'));
+        System.assert(prompt.contains('output {"action":"update_execute","objectApiName":"X","recordIds":["id1","id2"],"fields":{"F1":"v1","F2":"v2"}}'));
+        System.assert(prompt.contains('For confirming a pending bulk update: {"action":"update_execute","objectApiName":"Opportunity","recordIds":["006...","006..."],"fields":{"CloseDate":"2026-12-31"}}'));
+        System.assert(prompt.contains('For cancelling a pending bulk update: {"action":"update_cancel"}'));
+    }
+
+    @isTest
+    static void testParseCreateAction_BulkUpdateExecuteJson() {
+        Map<String, Object> result = AgentforceWorkspaceRecordCreator.parseCreateAction(
+            '{"action":"update_execute","objectApiName":"Opportunity","recordIds":["006000000000001AAA","006000000000002AAA"],"fields":{"CloseDate":"2026-12-31"}}'
+        );
+
+        System.assertEquals('update_execute', result.get('action'));
+        System.assertEquals('Opportunity', result.get('objectApiName'));
+        System.assertEquals(2, ((List<Object>) result.get('recordIds')).size());
+        System.assertEquals(
+            '2026-12-31',
+            String.valueOf(((Map<String, Object>) result.get('fields')).get('CloseDate'))
+        );
+    }
+
     // ═══════════════════════════════════════════════
     //  RecordCreator — handleCreateConfirm
     // ═══════════════════════════════════════════════
@@ -181,12 +213,12 @@ public class AgentforceWorkspaceControllerTest {
     @isTest
     static void testHandleCreateExecute_UnsupportedObject() {
         Map<String, Object> actionResult = new Map<String, Object>{
-            'objectApiName' => 'Lead',
-            'fields' => new Map<String, Object>{ 'LastName' => 'Test' }
+            'objectApiName' => 'Asset',
+            'fields' => new Map<String, Object>{ 'Name' => 'Unsupported Asset' }
         };
         AgentforceWorkspaceModels.ChatResult result =
             AgentforceWorkspaceRecordCreator.handleCreateExecute(actionResult, 'Dylan', 'test');
-        System.assert(result.response.contains('I can create Account, Task, and Event'));
+        System.assert(result.response.contains('I can create Account, Contact, Case, Lead, Opportunity, Task, and Event records.'));
     }
 
     @isTest
@@ -468,6 +500,276 @@ public class AgentforceWorkspaceControllerTest {
         System.assertEquals(UserInfo.getUserId(), created.OwnerId);
     }
 
+    @isTest
+    static void testBuildBulkUpdatePreview_ReturnsPendingPayloadAndPreviewHtml() {
+        Account acc = [SELECT Id FROM Account WHERE Name = 'Workspace Controller Test Account' LIMIT 1];
+        Opportunity secondOpp = new Opportunity(
+            Name = 'Workspace Controller Opp Two',
+            AccountId = acc.Id,
+            StageName = 'Prospecting',
+            CloseDate = Date.newInstance(2026, 6, 30)
+        );
+        insert secondOpp;
+
+        List<Opportunity> queriedOpps = [
+            SELECT Id, Name
+            FROM Opportunity
+            WHERE Name IN ('Workspace Controller Opp', 'Workspace Controller Opp Two')
+            ORDER BY Name
+        ];
+        List<SObject> matchedRecords = new List<SObject>();
+        matchedRecords.addAll(queriedOpps);
+
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceRecordCreator.buildBulkUpdatePreview(
+                'Opportunity',
+                matchedRecords,
+                new Map<String, String>{ 'CloseDate' => '2026-12-31' },
+                'Dylan'
+            );
+
+        System.assertNotEquals(null, result.pendingBulkUpdate);
+        System.assertEquals('Opportunity', result.pendingBulkUpdate.objectApiName);
+        System.assertEquals(2, result.pendingBulkUpdate.recordIds.size());
+        System.assertEquals('2026-12-31', result.pendingBulkUpdate.fields.get('CloseDate'));
+        System.assert(
+            result.response.contains('<h1>') || result.response.contains('<p>'),
+            'Expected preview response to contain stable HTML markup'
+        );
+        System.assert(
+            result.response.contains('Close Date') || result.response.toLowerCase().contains('confirm'),
+            'Expected preview response to mention the update or confirmation'
+        );
+    }
+
+    @isTest
+    static void testBuildBulkUpdatePreview_RejectsMoreThanTenRecords() {
+        Account acc = [SELECT Id FROM Account WHERE Name = 'Workspace Controller Test Account' LIMIT 1];
+        List<Opportunity> oppsToInsert = new List<Opportunity>();
+        for (Integer i = 0; i < 11; i++) {
+            oppsToInsert.add(new Opportunity(
+                Name = 'Workspace Preview Limit Opp ' + i,
+                AccountId = acc.Id,
+                StageName = 'Prospecting',
+                CloseDate = Date.newInstance(2026, 9, 1)
+            ));
+        }
+        insert oppsToInsert;
+
+        List<SObject> matchedRecords = new List<SObject>();
+        matchedRecords.addAll([
+            SELECT Id, Name
+            FROM Opportunity
+            WHERE Name LIKE 'Workspace Preview Limit Opp %'
+            ORDER BY Name
+        ]);
+
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceRecordCreator.buildBulkUpdatePreview(
+                'Opportunity',
+                matchedRecords,
+                new Map<String, String>{ 'CloseDate' => '2026-12-31' },
+                'Dylan'
+            );
+
+        System.assertEquals(null, result.pendingBulkUpdate);
+        System.assert(result.response.contains('10 records or fewer'));
+    }
+
+    @isTest
+    static void testHandleBulkUpdateExecute_UpdatesTwoOpportunityRecords() {
+        Account acc = [SELECT Id FROM Account WHERE Name = 'Workspace Controller Test Account' LIMIT 1];
+        Opportunity secondOpp = new Opportunity(
+            Name = 'Workspace Controller Opp Execute Two',
+            AccountId = acc.Id,
+            StageName = 'Prospecting',
+            CloseDate = Date.newInstance(2026, 7, 15)
+        );
+        insert secondOpp;
+
+        List<Opportunity> targetOpps = [
+            SELECT Id, CloseDate
+            FROM Opportunity
+            WHERE Name IN ('Workspace Controller Opp', 'Workspace Controller Opp Execute Two')
+            ORDER BY Name
+        ];
+
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceRecordCreator.handleBulkUpdateExecute(
+                new Map<String, Object>{
+                    'objectApiName' => 'Opportunity',
+                    'recordIds' => new List<String>{
+                        String.valueOf(targetOpps[0].Id),
+                        String.valueOf(targetOpps[1].Id)
+                    },
+                    'fields' => new Map<String, Object>{ 'CloseDate' => '2026-12-31' }
+                },
+                'Dylan'
+            );
+
+        System.assertEquals(true, result.pendingBulkUpdateCleared);
+        List<Opportunity> updatedOpps = [
+            SELECT Id, CloseDate
+            FROM Opportunity
+            WHERE Id IN :new Set<Id>{ targetOpps[0].Id, targetOpps[1].Id }
+            ORDER BY Id
+        ];
+        System.assertEquals(2, updatedOpps.size());
+        for (Opportunity opp : updatedOpps) {
+            System.assertEquals(Date.newInstance(2026, 12, 31), opp.CloseDate);
+        }
+    }
+
+    @isTest
+    static void testHandleBulkUpdateExecute_RejectsMoreThanTenRecords() {
+        Account acc = [SELECT Id FROM Account WHERE Name = 'Workspace Controller Test Account' LIMIT 1];
+        List<Opportunity> oppsToInsert = new List<Opportunity>();
+        for (Integer i = 0; i < 11; i++) {
+            oppsToInsert.add(new Opportunity(
+                Name = 'Workspace Bulk Limit Opp ' + i,
+                AccountId = acc.Id,
+                StageName = 'Prospecting',
+                CloseDate = Date.newInstance(2026, 8, 1)
+            ));
+        }
+        insert oppsToInsert;
+
+        List<String> recordIds = new List<String>();
+        for (Opportunity opp : oppsToInsert) {
+            recordIds.add(String.valueOf(opp.Id));
+        }
+
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceRecordCreator.handleBulkUpdateExecute(
+                new Map<String, Object>{
+                    'objectApiName' => 'Opportunity',
+                    'recordIds' => recordIds,
+                    'fields' => new Map<String, Object>{ 'CloseDate' => '2026-12-31' }
+                },
+                'Dylan'
+            );
+
+        System.assert(result.response.contains('10 records or fewer'));
+        System.assertEquals(false, result.pendingBulkUpdateCleared);
+    }
+
+    @isTest
+    static void testHandleBulkUpdateExecute_RejectsMalformedRecordIdsPayload() {
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceRecordCreator.handleBulkUpdateExecute(
+                new Map<String, Object>{
+                    'objectApiName' => 'Opportunity',
+                    'recordIds' => 'not-a-list',
+                    'fields' => new Map<String, Object>{ 'CloseDate' => '2026-12-31' }
+                },
+                'Dylan'
+            );
+
+        System.assertEquals(false, result.pendingBulkUpdateCleared);
+        System.assert(result.response.toLowerCase().contains('record') && result.response.toLowerCase().contains('format'));
+    }
+
+    @isTest
+    static void testHandleBulkUpdateExecute_RejectsMalformedFieldsPayload() {
+        Opportunity targetOpp = [
+            SELECT Id
+            FROM Opportunity
+            WHERE Name = 'Workspace Controller Opp'
+            LIMIT 1
+        ];
+
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceRecordCreator.handleBulkUpdateExecute(
+                new Map<String, Object>{
+                    'objectApiName' => 'Opportunity',
+                    'recordIds' => new List<String>{ String.valueOf(targetOpp.Id) },
+                    'fields' => 'not-a-map'
+                },
+                'Dylan'
+            );
+
+        System.assertEquals(false, result.pendingBulkUpdateCleared);
+        System.assert(result.response.toLowerCase().contains('field') && result.response.toLowerCase().contains('format'));
+    }
+
+    @isTest
+    static void testHandleBulkUpdateExecute_InvalidFieldValueFailsSafely_AndSingleUpdateStillWorks() {
+        Account acc = [SELECT Id FROM Account WHERE Name = 'Workspace Controller Test Account' LIMIT 1];
+        Opportunity secondOpp = new Opportunity(
+            Name = 'Workspace Controller Opp Invalid Value Two',
+            AccountId = acc.Id,
+            StageName = 'Prospecting',
+            CloseDate = Date.newInstance(2026, 10, 15)
+        );
+        insert secondOpp;
+
+        List<Opportunity> targetOpps = [
+            SELECT Id, CloseDate
+            FROM Opportunity
+            WHERE Name IN ('Workspace Controller Opp', 'Workspace Controller Opp Invalid Value Two')
+            ORDER BY Name
+        ];
+
+        Date firstOriginalCloseDate = targetOpps[0].CloseDate;
+        Date secondOriginalCloseDate = targetOpps[1].CloseDate;
+
+        AgentforceWorkspaceModels.ChatResult bulkResult =
+            AgentforceWorkspaceRecordCreator.handleBulkUpdateExecute(
+                new Map<String, Object>{
+                    'objectApiName' => 'Opportunity',
+                    'recordIds' => new List<String>{
+                        String.valueOf(targetOpps[0].Id),
+                        String.valueOf(targetOpps[1].Id)
+                    },
+                    'fields' => new Map<String, Object>{ 'CloseDate' => 'not-a-date' }
+                },
+                'Dylan'
+            );
+
+        System.assertEquals(false, bulkResult.pendingBulkUpdateCleared);
+        System.assert(
+            bulkResult.response.toLowerCase().contains('valid')
+                || bulkResult.response.toLowerCase().contains('couldn\'t apply'),
+            'Expected a truthful validation error for invalid bulk field values'
+        );
+
+        List<Opportunity> unchangedOpps = [
+            SELECT Id, CloseDate
+            FROM Opportunity
+            WHERE Id IN :new Set<Id>{ targetOpps[0].Id, targetOpps[1].Id }
+            ORDER BY Id
+        ];
+        System.assertEquals(firstOriginalCloseDate, unchangedOpps[0].CloseDate);
+        System.assertEquals(secondOriginalCloseDate, unchangedOpps[1].CloseDate);
+
+        AgentforceWorkspaceModels.ChatResult singleResult =
+            AgentforceWorkspaceRecordCreator.handleUpdateExecute(
+                new Map<String, Object>{
+                    'recordId' => String.valueOf(targetOpps[0].Id),
+                    'objectApiName' => 'Opportunity',
+                    'fields' => new Map<String, Object>{ 'CloseDate' => '2026-12-31' }
+                },
+                'Dylan'
+            );
+
+        System.assertEquals(true, singleResult.pendingUpdateCleared);
+        Opportunity updatedSingle = [
+            SELECT CloseDate
+            FROM Opportunity
+            WHERE Id = :targetOpps[0].Id
+        ];
+        System.assertEquals(Date.newInstance(2026, 12, 31), updatedSingle.CloseDate);
+    }
+
+    @isTest
+    static void testHandleBulkUpdateCancel_ClearsPendingState() {
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceRecordCreator.handleBulkUpdateCancel('Dylan');
+
+        System.assertEquals(true, result.pendingBulkUpdateCleared);
+        System.assert(result.response.toLowerCase().contains('no changes were made'));
+    }
+
     // ═══════════════════════════════════════════════
     //  Controller — getUserFirstName
     // ═══════════════════════════════════════════════
@@ -551,6 +853,89 @@ public class AgentforceWorkspaceControllerTest {
         System.assertNotEquals(null, result.querySummary);
     }
 
+    @isTest
+    static void testDispatchCreateAction_UpdateExecuteWithRecordIds_UsesBulkPath() {
+        Account acc = [SELECT Id FROM Account WHERE Name = 'Workspace Controller Test Account' LIMIT 1];
+        Opportunity secondOpp = new Opportunity(
+            Name = 'Workspace Controller Routed Bulk Opp',
+            AccountId = acc.Id,
+            StageName = 'Prospecting',
+            CloseDate = Date.newInstance(2026, 9, 15)
+        );
+        insert secondOpp;
+
+        List<Opportunity> targetOpps = [
+            SELECT Id, CloseDate
+            FROM Opportunity
+            WHERE Name IN ('Workspace Controller Opp', 'Workspace Controller Routed Bulk Opp')
+            ORDER BY Name
+        ];
+
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceController.dispatchCreateAction(
+                new Map<String, Object>{
+                    'action' => 'update_execute',
+                    'objectApiName' => 'Opportunity',
+                    'recordIds' => new List<String>{
+                        String.valueOf(targetOpps[0].Id),
+                        String.valueOf(targetOpps[1].Id)
+                    },
+                    'fields' => new Map<String, Object>{ 'CloseDate' => '2026-12-31' }
+                },
+                'Dylan',
+                'test',
+                null
+            );
+
+        System.assertEquals(true, result.pendingBulkUpdateCleared);
+        System.assertEquals(false, result.pendingUpdateCleared);
+
+        List<Opportunity> updatedOpps = [
+            SELECT Id, CloseDate
+            FROM Opportunity
+            WHERE Id IN :new Set<Id>{ targetOpps[0].Id, targetOpps[1].Id }
+            ORDER BY Id
+        ];
+        for (Opportunity opp : updatedOpps) {
+            System.assertEquals(Date.newInstance(2026, 12, 31), opp.CloseDate);
+        }
+    }
+
+    @isTest
+    static void testDispatchCreateAction_UpdateCancel_WithPendingBulkContext_UsesBulkPath() {
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceController.dispatchCreateAction(
+                new Map<String, Object>{ 'action' => 'update_cancel' },
+                'Dylan',
+                'test',
+                '[SYSTEM: Pending bulk update — Object: Opportunity, Count: 2, Record IDs: 006x,006y, Fields: CloseDate=2026-12-31]'
+            );
+
+        System.assertEquals(true, result.pendingBulkUpdateCleared);
+        System.assertEquals(false, result.pendingUpdateCleared);
+        System.assert(result.response.toLowerCase().contains('no changes were made'));
+    }
+
+    @isTest
+    static void testClassifyIntent_BlankMessage() {
+        AgentforceWorkspaceModels.IntentResult result =
+            AgentforceWorkspaceController.classifyIntent('', null);
+        System.assertEquals('CLARIFY', result.intent);
+        System.assertEquals('Need more detail before continuing', result.plan);
+        System.assertEquals('Please provide a question.', result.clarification);
+    }
+
+    @isTest
+    static void testClassifyIntent_UpdateRequest() {
+        Test.startTest();
+        AgentforceWorkspaceModels.IntentResult result =
+            AgentforceWorkspaceController.classifyIntent('Update Global Logistics Corp to Mid-Market', null);
+        Test.stopTest();
+        System.assertEquals('UPDATE', result.intent);
+        System.assertEquals('Update an existing record', result.plan);
+        System.assertNotEquals(null, result.confidence);
+    }
+
     // ═══════════════════════════════════════════════
     //  Controller — analyzeResults
     // ═══════════════════════════════════════════════
@@ -615,6 +1000,52 @@ public class AgentforceWorkspaceControllerTest {
         Test.stopTest();
         System.assertEquals('<p>Confirmed!</p>', result.response);
         System.assertEquals(null, result.createdRecord);
+    }
+
+    @isTest
+    static void testAnalyzeResults_CreateResultWithPendingBulkUpdate() {
+        String json = JSON.serialize(new Map<String, Object>{
+            'isCreateResult' => true,
+            'chatResult' => new Map<String, Object>{
+                'response' => '<p>Preview ready.</p>',
+                'pendingBulkUpdate' => new Map<String, Object>{
+                    'objectApiName' => 'Opportunity',
+                    'recordIds' => new List<String>{ '006000000000001AAA', '006000000000002AAA' },
+                    'matchedCount' => 2,
+                    'fields' => new Map<String, Object>{ 'CloseDate' => '2026-12-31' },
+                    'records' => new List<Object>{
+                        new Map<String, Object>{ 'recordId' => '006000000000001AAA', 'recordName' => 'Opp A' },
+                        new Map<String, Object>{ 'recordId' => '006000000000002AAA', 'recordName' => 'Opp B' }
+                    }
+                }
+            }
+        });
+
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceController.analyzeResults(json, 'update these opportunities', null, null);
+
+        System.assertNotEquals(null, result.pendingBulkUpdate);
+        System.assertEquals('Opportunity', result.pendingBulkUpdate.objectApiName);
+        System.assertEquals(2, result.pendingBulkUpdate.matchedCount);
+        System.assertEquals('2026-12-31', result.pendingBulkUpdate.fields.get('CloseDate'));
+        System.assertEquals(2, result.pendingBulkUpdate.recordIds.size());
+        System.assertEquals(2, result.pendingBulkUpdate.records.size());
+    }
+
+    @isTest
+    static void testAnalyzeResults_CreateResultWithPendingBulkUpdateCleared() {
+        String json = JSON.serialize(new Map<String, Object>{
+            'isCreateResult' => true,
+            'chatResult' => new Map<String, Object>{
+                'response' => '<p>Cancelled.</p>',
+                'pendingBulkUpdateCleared' => true
+            }
+        });
+
+        AgentforceWorkspaceModels.ChatResult result =
+            AgentforceWorkspaceController.analyzeResults(json, 'skip', null, null);
+
+        System.assertEquals(true, result.pendingBulkUpdateCleared);
     }
 
     @isTest

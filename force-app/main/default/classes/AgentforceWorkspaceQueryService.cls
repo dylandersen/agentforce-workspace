@@ -4,12 +4,20 @@
  */
 public with sharing class AgentforceWorkspaceQueryService {
 
-    // Core CRM objects that get record list views below the chat
-    public static final Set<String> LIST_VIEW_OBJECTS = new Set<String>{
+    /**
+     * Objects eligible for record tab display. Now dynamic — any accessible
+     * object with query results gets a tab. This set serves as a fast-path
+     * for well-known CRM objects (supplementary queries, OCR enrichment, etc.)
+     * but is NOT a gate: objects absent from this set still get tabs via the
+     * dynamic path in buildRecordTabs().
+     */
+    public static final Set<String> WELL_KNOWN_OBJECTS = new Set<String>{
         'Account', 'Opportunity', 'Contact', 'Case', 'Lead', 'Campaign',
         'Task', 'Event'
     };
 
+    // Delegates to SchemaService — kept as convenience accessors for callers
+    // that still reference these. New code should use SchemaService directly.
     public static final Map<String, String> OBJECT_ICONS = new Map<String, String>{
         'Account' => 'standard:account',
         'Opportunity' => 'standard:opportunity',
@@ -21,42 +29,11 @@ public with sharing class AgentforceWorkspaceQueryService {
         'Event' => 'standard:event'
     };
 
-    public static final Map<String, String> OBJECT_NAME_FIELDS = new Map<String, String>{
-        'Account' => 'Name',
-        'Opportunity' => 'Name',
-        'Contact' => 'Name',
-        'Case' => 'CaseNumber',
-        'Lead' => 'Name',
-        'Campaign' => 'Name',
-        'Task' => 'Subject',
-        'Event' => 'Subject'
-    };
-
-    private static final List<String> TAB_ORDER = new List<String>{
-        'Opportunity', 'Account', 'Contact', 'Lead', 'Case', 'Campaign',
-        'Task', 'Event'
-    };
-
-    // Default sort field per object type (raw values stored in _sortKey)
-    private static final Map<String, String> DEFAULT_SORT_FIELD = new Map<String, String>{
-        'Opportunity' => 'CloseDate',
-        'Case' => 'CreatedDate',
-        'Lead' => 'CreatedDate',
-        'Account' => 'Name',
-        'Contact' => 'Name',
-        'Campaign' => 'StartDate',
-        'Task' => 'ActivityDate',
-        'Event' => 'StartDateTime'
-    };
-
-    private static final Set<String> SORT_DESCENDING = new Set<String>{
-        'Opportunity', 'Case', 'Lead', 'Campaign', 'Task', 'Event'
-    };
-
-    // Default fields for supplementary detail queries when only aggregates were returned
+    // Default fields for supplementary detail queries (well-known objects).
+    // For unknown objects, SchemaService.getDefaultListFields() builds this dynamically.
     public static final Map<String, String> DEFAULT_LIST_FIELDS = new Map<String, String>{
         'Opportunity' => 'Id, Name, Account.Name, StageName, Amount, CloseDate',
-        'Account' => 'Id, Name, Industry, Type, Phone, BillingCity, BillingState, BillingStreet, BillingPostalCode',
+        'Account' => 'Id, Name, Industry, Type, LastActivityDate, Phone, BillingCity, BillingState, BillingStreet, BillingPostalCode',
         'Contact' => 'Id, Name, Account.Name, Email, Phone, Title, MailingCity, MailingState, MailingStreet, MailingPostalCode',
         'Case' => 'Id, CaseNumber, Subject, Status, Priority, CreatedDate',
         'Lead' => 'Id, Name, Company, Status, Email, CreatedDate',
@@ -90,7 +67,8 @@ public with sharing class AgentforceWorkspaceQueryService {
         );
     }
 
-    /** Find which LIST_VIEW_OBJECTS have individual (non-aggregate, non-count) records. */
+    /** Find which objects have individual (non-aggregate, non-count) records.
+     *  Now dynamic — returns ANY accessible object type, not just well-known ones. */
     public static Set<String> findObjectsWithRecords(List<BusinessIntelligence.QueryExecution> executions) {
         Set<String> objects = new Set<String>();
         for (BusinessIntelligence.QueryExecution exec : executions) {
@@ -98,13 +76,16 @@ public with sharing class AgentforceWorkspaceQueryService {
             if (exec.countResult != null) continue;
             for (SObject record : exec.results) {
                 String objType = String.valueOf(record.getSObjectType());
-                if (LIST_VIEW_OBJECTS.contains(objType)) objects.add(objType);
+                if (AgentforceWorkspaceSchemaService.isAccessible(objType)) {
+                    objects.add(objType);
+                }
             }
         }
         return objects;
     }
 
-    /** Run supplementary detail queries for objects that only appeared in aggregates/counts. */
+    /** Run supplementary detail queries for objects that only appeared in aggregates/counts.
+     *  Now supports ANY accessible object — uses SchemaService for dynamic field resolution. */
     public static Map<String, List<SObject>> runSupplementaryQueries(
             List<BusinessIntelligence.QueryExecution> executions, Set<String> objectsWithRecords) {
         Map<String, List<SObject>> results = new Map<String, List<SObject>>();
@@ -116,10 +97,9 @@ public with sharing class AgentforceWorkspaceQueryService {
         for (BusinessIntelligence.QueryExecution exec : executions) {
             if (exec.error != null) continue;
             String objName = parseObjectFromSOQL(exec.soql);
-            if (objName != null && LIST_VIEW_OBJECTS.contains(objName)) {
+            if (objName != null && AgentforceWorkspaceSchemaService.isAccessible(objName)) {
                 queriedObjects.add(objName);
             }
-            // Collect Account IDs from Event.WhatId to drive supplementary Account/Case tabs
             if (objName == 'Event' && exec.results != null) {
                 for (SObject rec : exec.results) {
                     Object whatId = rec.get('WhatId');
@@ -131,7 +111,6 @@ public with sharing class AgentforceWorkspaceQueryService {
                     }
                 }
             }
-            // Collect Contact and Opportunity IDs from OpportunityContactRole to drive record tabs
             if (objName == 'OpportunityContactRole' && exec.results != null && exec.countResult == null) {
                 for (SObject rec : exec.results) {
                     Object contactId = rec.get('ContactId');
@@ -142,43 +121,42 @@ public with sharing class AgentforceWorkspaceQueryService {
             }
         }
 
-        // If OpportunityContactRole returned Contact/Opportunity IDs, run supplementary queries to show record tabs
+        // OpportunityContactRole enrichment
         if (!ocrContactIds.isEmpty() || !ocrOpportunityIds.isEmpty()) {
             if (!ocrContactIds.isEmpty() && !objectsWithRecords.contains('Contact')) {
                 try {
                     List<SObject> contactResults = Database.query(
-                        'SELECT ' + DEFAULT_LIST_FIELDS.get('Contact') + ' FROM Contact WHERE Id IN :ocrContactIds WITH USER_MODE ORDER BY Name LIMIT 200'
+                        'SELECT ' + AgentforceWorkspaceSchemaService.getDefaultListFields('Contact') + ' FROM Contact WHERE Id IN :ocrContactIds WITH USER_MODE ORDER BY Name LIMIT 200'
                     );
                     if (!contactResults.isEmpty()) {
                         results.put('Contact', contactResults);
                         objectsWithRecords.add('Contact');
                     }
                 } catch (Exception e) {
-                    System.debug(LoggingLevel.WARN, 'OpportunityContactRole supplementary Contact query failed: ' + e.getMessage());
+                    System.debug(LoggingLevel.WARN, 'OCR supplementary Contact query failed: ' + e.getMessage());
                 }
             }
             if (!ocrOpportunityIds.isEmpty() && !objectsWithRecords.contains('Opportunity')) {
                 try {
                     List<SObject> oppResults = Database.query(
-                        'SELECT ' + DEFAULT_LIST_FIELDS.get('Opportunity') + ' FROM Opportunity WHERE Id IN :ocrOpportunityIds WITH USER_MODE ORDER BY Amount DESC NULLS LAST, CloseDate LIMIT 200'
+                        'SELECT ' + AgentforceWorkspaceSchemaService.getDefaultListFields('Opportunity') + ' FROM Opportunity WHERE Id IN :ocrOpportunityIds WITH USER_MODE ORDER BY Amount DESC NULLS LAST, CloseDate LIMIT 200'
                     );
                     if (!oppResults.isEmpty()) {
                         results.put('Opportunity', oppResults);
                         objectsWithRecords.add('Opportunity');
                     }
                 } catch (Exception e) {
-                    System.debug(LoggingLevel.WARN, 'OpportunityContactRole supplementary Opportunity query failed: ' + e.getMessage());
+                    System.debug(LoggingLevel.WARN, 'OCR supplementary Opportunity query failed: ' + e.getMessage());
                 }
             }
         }
 
-        // If events returned Account WhatIds, and Account/Case tabs aren't already populated,
-        // run supplementary Account and Case queries scoped to those accounts
+        // Event → Account/Case enrichment
         if (!eventWhatAccountIds.isEmpty()) {
             if (!objectsWithRecords.contains('Account')) {
                 try {
                     List<SObject> accResults = Database.query(
-                        'SELECT ' + DEFAULT_LIST_FIELDS.get('Account') + ' FROM Account WHERE Id IN :eventWhatAccountIds WITH USER_MODE LIMIT 200'
+                        'SELECT ' + AgentforceWorkspaceSchemaService.getDefaultListFields('Account') + ' FROM Account WHERE Id IN :eventWhatAccountIds WITH USER_MODE LIMIT 200'
                     );
                     if (!accResults.isEmpty()) {
                         results.put('Account', accResults);
@@ -191,7 +169,7 @@ public with sharing class AgentforceWorkspaceQueryService {
             if (!objectsWithRecords.contains('Case')) {
                 try {
                     List<SObject> caseResults = Database.query(
-                        'SELECT ' + DEFAULT_LIST_FIELDS.get('Case') + ' FROM Case WHERE AccountId IN :eventWhatAccountIds AND IsClosed = false WITH USER_MODE ORDER BY Priority ASC, CreatedDate DESC NULLS LAST LIMIT 200'
+                        'SELECT ' + AgentforceWorkspaceSchemaService.getDefaultListFields('Case') + ' FROM Case WHERE AccountId IN :eventWhatAccountIds AND IsClosed = false WITH USER_MODE ORDER BY Priority ASC, CreatedDate DESC NULLS LAST LIMIT 200'
                     );
                     if (!caseResults.isEmpty()) {
                         results.put('Case', caseResults);
@@ -203,18 +181,19 @@ public with sharing class AgentforceWorkspaceQueryService {
             }
         }
 
+        // Generic supplementary queries for ANY queried object (dynamic field resolution)
         for (String objType : queriedObjects) {
             if (objectsWithRecords.contains(objType)) continue;
             try {
-                String fields = DEFAULT_LIST_FIELDS.get(objType);
+                String fields = AgentforceWorkspaceSchemaService.getDefaultListFields(objType);
                 if (fields == null) continue;
                 String whereClause = extractBestWhereClause(executions, objType);
                 String soql = 'SELECT ' + fields + ' FROM ' + objType;
                 if (String.isNotBlank(whereClause)) soql += ' WHERE ' + whereClause;
-                String supSort = DEFAULT_SORT_FIELD.get(objType);
+                String supSort = AgentforceWorkspaceSchemaService.getDefaultSortField(objType);
                 if (supSort != null) {
                     soql += ' ORDER BY ' + supSort;
-                    if (SORT_DESCENDING.contains(objType)) soql += ' DESC';
+                    if (AgentforceWorkspaceSchemaService.isSortDescending(objType)) soql += ' DESC';
                     soql += ' NULLS LAST';
                 }
                 soql += ' LIMIT 200';
@@ -285,8 +264,9 @@ public with sharing class AgentforceWorkspaceQueryService {
 
     /**
      * Build record tabs from query results for the list view.
-     * Groups records by core CRM object type, deduplicates by Id,
+     * Groups records by object type, deduplicates by Id,
      * and determines columns from the SOQL-selected fields.
+     * Now supports ANY accessible object — not just well-known CRM objects.
      */
     public static List<AgentforceWorkspaceModels.RecordTab> buildRecordTabs(
             List<BusinessIntelligence.QueryExecution> executions,
@@ -297,7 +277,7 @@ public with sharing class AgentforceWorkspaceQueryService {
         for (BusinessIntelligence.QueryExecution exec : executions) {
             if (exec.countResult == null) continue;
             String objName = parseObjectFromSOQL(exec.soql);
-            if (objName != null && LIST_VIEW_OBJECTS.contains(objName)) {
+            if (objName != null && AgentforceWorkspaceSchemaService.isAccessible(objName)) {
                 Integer existing = countsByObject.get(objName);
                 if (existing == null || exec.countResult > existing) {
                     countsByObject.put(objName, exec.countResult);
@@ -305,7 +285,7 @@ public with sharing class AgentforceWorkspaceQueryService {
             }
         }
 
-        // Group records by object type, deduplicating by Id
+        // Group records by object type, deduplicating by Id — accept ANY accessible object
         Map<String, Map<Id, SObject>> recordsByObject = new Map<String, Map<Id, SObject>>();
 
         for (BusinessIntelligence.QueryExecution exec : executions) {
@@ -314,7 +294,7 @@ public with sharing class AgentforceWorkspaceQueryService {
 
             for (SObject record : exec.results) {
                 String objType = String.valueOf(record.getSObjectType());
-                if (!LIST_VIEW_OBJECTS.contains(objType)) continue;
+                if (!AgentforceWorkspaceSchemaService.isAccessible(objType)) continue;
                 if (record.Id == null) continue;
 
                 if (!recordsByObject.containsKey(objType)) {
@@ -344,10 +324,9 @@ public with sharing class AgentforceWorkspaceQueryService {
         for (BusinessIntelligence.QueryExecution exec : executions) {
             if (exec.error != null || String.isBlank(exec.soql)) continue;
             if (exec.countResult != null) continue;
-            // Skip aggregate queries — their ORDER BY doesn't apply to individual records
             if (exec.soql.toUpperCase().contains(' GROUP BY ')) continue;
             String objName = parseObjectFromSOQL(exec.soql);
-            if (objName == null || !LIST_VIEW_OBJECTS.contains(objName)) continue;
+            if (objName == null) continue;
             String orderField = parseOrderByField(exec.soql);
             if (orderField != null && !querySortField.containsKey(objName)) {
                 querySortField.put(objName, orderField);
@@ -358,20 +337,25 @@ public with sharing class AgentforceWorkspaceQueryService {
         List<AgentforceWorkspaceModels.RecordTab> tabs = new List<AgentforceWorkspaceModels.RecordTab>();
         Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
 
-        // Iterate in defined tab order
-        for (String objType : TAB_ORDER) {
+        // Iterate in smart order: well-known objects first, then custom/other alphabetically
+        List<String> tabOrder = AgentforceWorkspaceSchemaService.sortTabOrder(recordsByObject.keySet());
+
+        for (String objType : tabOrder) {
             if (!recordsByObject.containsKey(objType)) continue;
 
             Map<Id, SObject> records = recordsByObject.get(objType);
+            Schema.SObjectType sot = globalDescribe.get(objType.toLowerCase());
+            if (sot == null) continue;
+
             AgentforceWorkspaceModels.RecordTab tab = new AgentforceWorkspaceModels.RecordTab();
             tab.objectApiName = objType;
-            tab.objectLabel = globalDescribe.get(objType).getDescribe().getLabelPlural();
-            tab.iconName = OBJECT_ICONS.containsKey(objType) ? OBJECT_ICONS.get(objType) : 'standard:record';
+            tab.objectLabel = sot.getDescribe().getLabelPlural();
+            tab.iconName = AgentforceWorkspaceSchemaService.getIcon(objType);
             tab.recordCount = records.size();
             tab.totalCount = countsByObject.containsKey(objType) ? countsByObject.get(objType) : null;
 
-            String nameField = OBJECT_NAME_FIELDS.containsKey(objType) ? OBJECT_NAME_FIELDS.get(objType) : 'Name';
-            Map<String, Schema.SObjectField> fieldMap = globalDescribe.get(objType).getDescribe().fields.getMap();
+            String nameField = AgentforceWorkspaceSchemaService.getNameField(objType);
+            Map<String, Schema.SObjectField> fieldMap = sot.getDescribe().fields.getMap();
 
             // Collect all field names from the records (union across all records)
             Set<String> allFieldNames = new Set<String>();
@@ -452,8 +436,10 @@ public with sharing class AgentforceWorkspaceQueryService {
 
                 Map<String, Object> populated = rec.getPopulatedFieldsAsMap();
 
-                // Store sort key — use query ORDER BY if present, else default
-                String sortFieldName = querySortField.containsKey(objType) ? querySortField.get(objType) : DEFAULT_SORT_FIELD.get(objType);
+                // Store sort key — use query ORDER BY if present, else SchemaService default
+                String sortFieldName = querySortField.containsKey(objType)
+                    ? querySortField.get(objType)
+                    : AgentforceWorkspaceSchemaService.getDefaultSortField(objType);
                 if (sortFieldName != null) {
                     Object rawSortVal = populated.get(sortFieldName);
                     row.put('_sortKey', rawSortVal != null ? String.valueOf(rawSortVal) : '');
@@ -549,8 +535,12 @@ public with sharing class AgentforceWorkspaceQueryService {
             }
 
             // -- Sort rows --
-            String sortField = querySortField.containsKey(objType) ? querySortField.get(objType) : DEFAULT_SORT_FIELD.get(objType);
-            Boolean sortDesc = querySortDesc.containsKey(objType) ? querySortDesc.get(objType) : SORT_DESCENDING.contains(objType);
+            String sortField = querySortField.containsKey(objType)
+                ? querySortField.get(objType)
+                : AgentforceWorkspaceSchemaService.getDefaultSortField(objType);
+            Boolean sortDesc = querySortDesc.containsKey(objType)
+                ? querySortDesc.get(objType)
+                : AgentforceWorkspaceSchemaService.isSortDescending(objType);
             if (sortField != null && !tab.rows.isEmpty()) {
                 sortRows(tab.rows, '_sortKey', sortDesc);
             }

@@ -36,20 +36,7 @@ public with sharing class AgentforceWorkspaceController {
             // Check for record creation/update action before SOQL parsing
             Map<String, Object> createAction = AgentforceWorkspaceRecordCreator.parseCreateAction(soqlResponse);
             if (createAction != null) {
-                // Multi-record create (e.g. "create an account AND a contact on it")
-                if (createAction.containsKey('actions')) {
-                    return AgentforceWorkspaceRecordCreator.handleMultiCreateExecute(createAction, userName, resolvedModel);
-                }
-                String action = (String) createAction.get('action');
-                if (action == 'create') {
-                    return AgentforceWorkspaceRecordCreator.handleCreateConfirm(createAction, userName, resolvedModel);
-                } else if (action == 'create_execute') {
-                    return AgentforceWorkspaceRecordCreator.handleCreateExecute(createAction, userName, resolvedModel);
-                } else if (action == 'update_execute') {
-                    return AgentforceWorkspaceRecordCreator.handleUpdateExecute(createAction, userName);
-                } else if (action == 'update_cancel') {
-                    return AgentforceWorkspaceRecordCreator.handleUpdateCancel(userName);
-                }
+                return dispatchCreateAction(createAction, userName, resolvedModel, conversationHistory);
             }
 
             List<BusinessIntelligence.QueryPlan> plans = BusinessIntelligence.parseAndValidateSOQL(soqlResponse);
@@ -132,6 +119,8 @@ public with sharing class AgentforceWorkspaceController {
                     + '___EMAIL_DRAFT_PLACEHOLDER___'
                     + rawResponse.substring(edEnd + 14);
             }
+            rawResponse = AgentforceWorkspaceAnalysisService.enforceRunningUserIdentity(
+                rawResponse, data.userName, data.userFullName);
             rawResponse = AgentforceWorkspaceLinkService.safeInjectRecordLinks(rawResponse, recordLinks);
             if (String.isNotBlank(emailDraftBlock)) {
                 rawResponse = rawResponse.replace('___EMAIL_DRAFT_PLACEHOLDER___', emailDraftBlock);
@@ -151,6 +140,23 @@ public with sharing class AgentforceWorkspaceController {
             error.response = '<p>Something went wrong while analyzing your question. Please try again.</p>';
             return error;
         }
+    }
+
+    /**
+     * Lightweight Pass 0 endpoint so the LWC can render the plan immediately
+     * while the heavier query-building flow continues in parallel.
+     */
+    @AuraEnabled
+    public static AgentforceWorkspaceModels.IntentResult classifyIntent(String userMessage, String conversationHistory) {
+        AgentforceWorkspaceModels.IntentResult result = new AgentforceWorkspaceModels.IntentResult();
+        if (String.isBlank(userMessage)) {
+            result.intent = 'CLARIFY';
+            result.plan = 'Need more detail before continuing';
+            result.confidence = 1;
+            result.clarification = 'Please provide a question.';
+            return result;
+        }
+        return AgentforceWorkspaceReasoningEngine.previewIntent(userMessage, conversationHistory);
     }
 
     /**
@@ -205,56 +211,18 @@ public with sharing class AgentforceWorkspaceController {
             // ── Handle: Create/Update action detected ──
             if (reasoning.createAction != null) {
                 Map<String, Object> createAction = reasoning.createAction;
-                // Multi-record create
-                if (createAction.containsKey('actions')) {
-                    AgentforceWorkspaceModels.ChatResult cr =
-                        AgentforceWorkspaceRecordCreator.handleMultiCreateExecute(createAction, userName, resolvedModel);
-                    result.executionDataJson = JSON.serialize(new Map<String, Object>{
-                        'isCreateResult' => true,
-                        'chatResult' => cr
-                    });
-                    result.querySummary = 'Creating records...';
-                    result.hasResults = true;
-                    return result;
-                }
                 String action = (String) createAction.get('action');
-                if (action == 'create') {
-                    AgentforceWorkspaceModels.ChatResult cr =
-                        AgentforceWorkspaceRecordCreator.handleCreateConfirm(createAction, userName, resolvedModel);
+                AgentforceWorkspaceModels.ChatResult cr =
+                    dispatchCreateAction(createAction, userName, resolvedModel, conversationHistory);
+                if (cr != null) {
                     result.executionDataJson = JSON.serialize(new Map<String, Object>{
                         'isCreateResult' => true,
                         'chatResult' => cr
                     });
-                    result.querySummary = 'Processing your request...';
-                    return result;
-                } else if (action == 'create_execute') {
-                    AgentforceWorkspaceModels.ChatResult cr =
-                        AgentforceWorkspaceRecordCreator.handleCreateExecute(createAction, userName, resolvedModel);
-                    result.executionDataJson = JSON.serialize(new Map<String, Object>{
-                        'isCreateResult' => true,
-                        'chatResult' => cr
-                    });
-                    result.querySummary = 'Creating record...';
-                    result.hasResults = true;
-                    return result;
-                } else if (action == 'update_execute') {
-                    AgentforceWorkspaceModels.ChatResult cr =
-                        AgentforceWorkspaceRecordCreator.handleUpdateExecute(createAction, userName);
-                    result.executionDataJson = JSON.serialize(new Map<String, Object>{
-                        'isCreateResult' => true,
-                        'chatResult' => cr
-                    });
-                    result.querySummary = 'Updating record...';
-                    result.hasResults = true;
-                    return result;
-                } else if (action == 'update_cancel') {
-                    AgentforceWorkspaceModels.ChatResult cr =
-                        AgentforceWorkspaceRecordCreator.handleUpdateCancel(userName);
-                    result.executionDataJson = JSON.serialize(new Map<String, Object>{
-                        'isCreateResult' => true,
-                        'chatResult' => cr
-                    });
-                    result.querySummary = 'Got it!';
+                    result.querySummary = getCreateActionSummary(action, createAction);
+                    result.hasResults = action == 'create_execute'
+                        || action == 'update_execute'
+                        || createAction.containsKey('actions');
                     return result;
                 }
             }
@@ -432,8 +400,45 @@ public with sharing class AgentforceWorkspaceController {
                     }
                     cr.pendingUpdate = pu;
                 }
+                if (crMap.containsKey('pendingBulkUpdate') && crMap.get('pendingBulkUpdate') != null) {
+                    Map<String, Object> pbuMap = (Map<String, Object>) crMap.get('pendingBulkUpdate');
+                    AgentforceWorkspaceModels.PendingBulkUpdate pbu =
+                        new AgentforceWorkspaceModels.PendingBulkUpdate();
+                    pbu.objectApiName = (String) pbuMap.get('objectApiName');
+                    pbu.matchedCount = pbuMap.get('matchedCount') != null
+                        ? Integer.valueOf(String.valueOf(pbuMap.get('matchedCount')))
+                        : 0;
+
+                    if (pbuMap.containsKey('recordIds') && pbuMap.get('recordIds') != null) {
+                        for (Object recordIdObj : (List<Object>) pbuMap.get('recordIds')) {
+                            pbu.recordIds.add(String.valueOf(recordIdObj));
+                        }
+                    }
+
+                    if (pbuMap.containsKey('fields') && pbuMap.get('fields') != null) {
+                        Map<String, Object> fieldMap = (Map<String, Object>) pbuMap.get('fields');
+                        for (String key : fieldMap.keySet()) {
+                            pbu.fields.put(key, String.valueOf(fieldMap.get(key)));
+                        }
+                    }
+
+                    if (pbuMap.containsKey('records') && pbuMap.get('records') != null) {
+                        for (Object recordObj : (List<Object>) pbuMap.get('records')) {
+                            Map<String, Object> recordMap = (Map<String, Object>) recordObj;
+                            AgentforceWorkspaceModels.BulkUpdateRecordRef ref =
+                                new AgentforceWorkspaceModels.BulkUpdateRecordRef();
+                            ref.recordId = (String) recordMap.get('recordId');
+                            ref.recordName = (String) recordMap.get('recordName');
+                            pbu.records.add(ref);
+                        }
+                    }
+
+                    cr.pendingBulkUpdate = pbu;
+                }
                 cr.pendingUpdateCleared = crMap.containsKey('pendingUpdateCleared')
                     && crMap.get('pendingUpdateCleared') == true;
+                cr.pendingBulkUpdateCleared = crMap.containsKey('pendingBulkUpdateCleared')
+                    && crMap.get('pendingBulkUpdateCleared') == true;
                 return cr;
             }
 
@@ -472,6 +477,8 @@ public with sharing class AgentforceWorkspaceController {
                     + '___EMAIL_DRAFT_PLACEHOLDER___'
                     + rawResponse.substring(edEnd2 + 14);
             }
+            rawResponse = AgentforceWorkspaceAnalysisService.enforceRunningUserIdentity(
+                rawResponse, data.userName, data.userFullName);
             rawResponse = AgentforceWorkspaceLinkService.safeInjectRecordLinks(rawResponse, data.recordLinks);
             if (String.isNotBlank(emailDraftBlock2)) {
                 rawResponse = rawResponse.replace('___EMAIL_DRAFT_PLACEHOLDER___', emailDraftBlock2);
@@ -505,6 +512,26 @@ public with sharing class AgentforceWorkspaceController {
         return users.isEmpty() ? null : users[0].SmallPhotoUrl;
     }
 
+    /**
+     * Returns a lightweight catalog of accessible custom objects in the org
+     * so the LWC can surface schema-aware task suggestions and context.
+     */
+    @AuraEnabled(cacheable=true)
+    public static List<Map<String, String>> getOrgSchemaContext() {
+        List<Map<String, String>> result = new List<Map<String, String>>();
+        List<AgentforceWorkspaceSchemaService.ObjectMeta> customObjects =
+            AgentforceWorkspaceSchemaService.listAccessibleCustomObjects(60);
+        for (AgentforceWorkspaceSchemaService.ObjectMeta meta : customObjects) {
+            Map<String, String> entry = new Map<String, String>();
+            entry.put('apiName', meta.apiName);
+            entry.put('label', meta.label);
+            entry.put('labelPlural', meta.labelPlural);
+            entry.put('isCreateable', String.valueOf(meta.isCreateable));
+            result.add(entry);
+        }
+        return result;
+    }
+
     /** Shared helper to deserialize a CreatedRecordInfo from a JSON map. */
     private static AgentforceWorkspaceModels.CreatedRecordInfo deserializeCreatedRecordInfo(Map<String, Object> recMap) {
         AgentforceWorkspaceModels.CreatedRecordInfo info = new AgentforceWorkspaceModels.CreatedRecordInfo();
@@ -525,5 +552,59 @@ public with sharing class AgentforceWorkspaceController {
             }
         }
         return info;
+    }
+
+    @TestVisible
+    private static AgentforceWorkspaceModels.ChatResult dispatchCreateAction(
+            Map<String, Object> createAction,
+            String userName,
+            String resolvedModel,
+            String conversationHistory) {
+        if (createAction == null) return null;
+
+        if (createAction.containsKey('actions')) {
+            return AgentforceWorkspaceRecordCreator.handleMultiCreateExecute(createAction, userName, resolvedModel);
+        }
+
+        String action = (String) createAction.get('action');
+        if (action == 'create') {
+            return AgentforceWorkspaceRecordCreator.handleCreateConfirm(createAction, userName, resolvedModel);
+        } else if (action == 'create_execute') {
+            return AgentforceWorkspaceRecordCreator.handleCreateExecute(createAction, userName, resolvedModel);
+        } else if (action == 'update_execute') {
+            return createAction.containsKey('recordIds')
+                ? AgentforceWorkspaceRecordCreator.handleBulkUpdateExecute(createAction, userName)
+                : AgentforceWorkspaceRecordCreator.handleUpdateExecute(createAction, userName);
+        } else if (action == 'update_cancel') {
+            return hasPendingBulkUpdate(conversationHistory)
+                ? AgentforceWorkspaceRecordCreator.handleBulkUpdateCancel(userName)
+                : AgentforceWorkspaceRecordCreator.handleUpdateCancel(userName);
+        }
+
+        return null;
+    }
+
+    private static String getCreateActionSummary(String action, Map<String, Object> createAction) {
+        if (createAction != null && createAction.containsKey('actions')) {
+            return 'Creating records...';
+        }
+        if (action == 'create') {
+            return 'Processing your request...';
+        }
+        if (action == 'create_execute') {
+            return 'Creating record...';
+        }
+        if (action == 'update_execute') {
+            return 'Updating record...';
+        }
+        if (action == 'update_cancel') {
+            return 'Got it!';
+        }
+        return 'Processing your request...';
+    }
+
+    private static Boolean hasPendingBulkUpdate(String conversationHistory) {
+        return String.isNotBlank(conversationHistory)
+            && conversationHistory.contains('Pending bulk update');
     }
 }

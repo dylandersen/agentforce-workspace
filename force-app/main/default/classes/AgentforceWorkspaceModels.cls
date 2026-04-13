@@ -15,12 +15,15 @@ public with sharing class AgentforceWorkspaceModels {
         @AuraEnabled public List<CreatedRecordInfo> allCreatedRecords;
         @AuraEnabled public ChartData chartData;
         @AuraEnabled public PendingUpdate pendingUpdate;
+        @AuraEnabled public PendingBulkUpdate pendingBulkUpdate;
         @AuraEnabled public Boolean pendingUpdateCleared;
+        @AuraEnabled public Boolean pendingBulkUpdateCleared;
         public ChatResult() {
             this.suggestions = new List<String>();
             this.recordTabs = new List<RecordTab>();
             this.forceRecordUpdate = false;
             this.pendingUpdateCleared = false;
+            this.pendingBulkUpdateCleared = false;
         }
     }
 
@@ -33,6 +36,27 @@ public with sharing class AgentforceWorkspaceModels {
         public PendingUpdate() { this.blankFields = new List<FieldPromptItem>(); }
     }
 
+    /** Pending bulk update preview surfaced before executing a multi-record update. */
+    public class PendingBulkUpdate {
+        @AuraEnabled public String objectApiName;
+        @AuraEnabled public Integer matchedCount;
+        @AuraEnabled public List<String> recordIds;
+        @AuraEnabled public List<BulkUpdateRecordRef> records;
+        @AuraEnabled public Map<String, String> fields;
+        public PendingBulkUpdate() {
+            this.matchedCount = 0;
+            this.recordIds = new List<String>();
+            this.records = new List<BulkUpdateRecordRef>();
+            this.fields = new Map<String, String>();
+        }
+    }
+
+    /** Lightweight record reference used by the pending bulk update preview. */
+    public class BulkUpdateRecordRef {
+        @AuraEnabled public String recordId;
+        @AuraEnabled public String recordName;
+    }
+
     /** A single blank field offered to the user for follow-up completion. */
     public class FieldPromptItem {
         @AuraEnabled public String apiName;
@@ -41,7 +65,7 @@ public with sharing class AgentforceWorkspaceModels {
 
     /** Chart data chosen by the LLM from the analysis results. */
     public class ChartData {
-        @AuraEnabled public String chartType;     // bar, horizontalBar, donut
+        @AuraEnabled public String chartType;     // horizontalBar, bar, donut, line, funnel, metricStrip
         @AuraEnabled public String title;
         @AuraEnabled public String valueLabel;    // e.g. "Amount", "Count"
         @AuraEnabled public String valuePrefix;   // e.g. "$"
@@ -54,6 +78,8 @@ public with sharing class AgentforceWorkspaceModels {
         @AuraEnabled public String label;
         @AuraEnabled public Decimal value;
         @AuraEnabled public String color;         // optional hex color
+        @AuraEnabled public String valuePrefix;   // optional per-item prefix for mixed-unit KPI strips
+        @AuraEnabled public String valueSuffix;   // optional per-item suffix for mixed-unit KPI strips
     }
 
     /** Structured info about a newly created record for the frontend card. */

@@ -139,6 +139,7 @@ public class BusinessIntelligenceTest {
     Test.stopTest();
 
     System.assert(context.contains('Account'), 'Should contain Account');
+    System.assert(context.contains('LastActivityDate'), 'Account schema should include LastActivityDate');
     System.assert(context.contains('Opportunity'), 'Should contain Opportunity');
     System.assert(context.contains('Case'), 'Should contain Case');
     System.assert(context.contains('Standard Objects'), 'Should contain standard header');

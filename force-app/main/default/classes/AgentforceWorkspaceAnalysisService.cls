@@ -131,6 +131,9 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('19h. Lead creatable fields: LastName (required), Company (required), FirstName, Email, Phone, MobilePhone, Title, Industry, Status (default "Open - Not Contacted"), LeadSource, Description, City, State, Country. Same name parsing rule as 19f.\n');
         parts.add('19i. Opportunity creatable fields: Name (required), StageName (required — use a valid stage from the schema below), CloseDate (required — YYYY-MM-DD), AccountId (account NAME — system resolves to ID), Amount (numeric only, no $ sign), Probability (0-100), NextStep, Description, Type, LeadSource.\n');
         parts.add('22. PENDING RECORD UPDATE — When the conversation history contains a line "[SYSTEM: Pending record update — Object: X, Record ID: xxx, Record Name: Y, Available blank fields: F1, F2, ...]" and the user\'s current message provides values for one or more of those fields, output: {"action":"update_execute","recordId":"xxx","objectApiName":"X","fields":{"FieldApiName":"value"}}. Use only field API names (e.g. Phone, Website, Amount). Include ONLY the fields the user actually mentioned. If the user declines (says "no", "skip", "looks good", "that\'s fine", "not now", or otherwise passes), output: {"action":"update_cancel"}.\n');
+        parts.add('22b. PENDING BULK UPDATE — When the conversation history contains a line "[SYSTEM: Pending bulk update — Object: X, Count: N, Record IDs: id1,id2, Fields: F1=v1;F2=v2]" and the user confirms with "yes", "confirm", "go ahead", "apply it", or similar, output {"action":"update_execute","objectApiName":"X","recordIds":["id1","id2"],"fields":{"F1":"v1","F2":"v2"}}.\n');
+        parts.add('22c. If the user declines a pending bulk update with "no", "cancel", "skip", "don\'t", or similar, output {"action":"update_cancel"}.\n');
+        parts.add('22d. Do not emit update_execute for more than 10 records. If the result set is larger, keep the response advisory.\n');
         parts.add('23. MULTIPLE RECORD CREATES IN ONE MESSAGE — When the user asks to create MORE THAN ONE record in a single message (e.g. "create an account called Acme AND a contact on it for Jane Smith"), output a multi-action JSON: {"actions":[{"action":"create_execute","objectApiName":"Account","fields":{...}},{"action":"create_execute","objectApiName":"Contact","fields":{"AccountId":"Acme",...}}]}. Rules: (a) Always order parent records first (Account before Contact/Case/Opportunity). (b) In the child record\'s reference field, put the PARENT\'S NAME (not ID) — the system creates the parent first and the name-to-ID lookup will find it automatically. (c) Use this format whenever the user mentions AND, ALSO, PLUS, or multiple objects being created. (d) If one of the creates needs more info, use "create" instead of "create_execute" for that step only.\n');
     }
 
@@ -158,6 +161,10 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('    - For high-priority cases: add AND Priority = \'High\' to the Case WHERE clause.\n');
         parts.add('    - ALWAYS generate all three queries (Event, Account, Case) when the question asks about meetings + accounts + cases.\n');
         parts.add('21. CONTACT ROLES ON OPPORTUNITIES — When the user asks about decision makers, contact roles, stakeholders, or contacts on opportunities, you MUST generate an OpportunityContactRole query in addition to any Opportunity query. Example: SELECT Id, OpportunityId, ContactId, Role, IsPrimary, Contact.Name, Contact.Email, Opportunity.Name, Opportunity.Amount FROM OpportunityContactRole WHERE OpportunityId IN (SELECT Id FROM Opportunity WHERE OwnerId = \'' + userId + '\' AND Amount > 100000 AND IsClosed = false) [AND Role = \'Decision Maker\' when user asks for decision makers] LIMIT 200. Include the matching COUNT query. For activity with contacts (e.g., "had any activity with them in the last 30 days"), also query Task and Event WHERE WhoId IN (SELECT ContactId FROM OpportunityContactRole WHERE OpportunityId IN (...)).\n');
+        parts.add('22. STALE ACCOUNT / NO RECENT ACTIVITY PATTERN — When the user asks for accounts that HAVE open opportunities but LACK recent activity, DO NOT try to combine Opportunity + Task + Event with three semi-join subqueries. Salesforce allows only two semi-join sub-selects, so that approach fails. Instead, anchor on Account and use Account.LastActivityDate. Correct pattern:\n');
+        parts.add('    - Count stale accounts with open opportunities: SELECT COUNT() FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE IsClosed = false) AND (LastActivityDate = NULL OR LastActivityDate < LAST_N_DAYS:30)\n');
+        parts.add('    - Detail list: SELECT Id, Name, Industry, Type, LastActivityDate FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE IsClosed = false) AND (LastActivityDate = NULL OR LastActivityDate < LAST_N_DAYS:30) ORDER BY LastActivityDate ASC NULLS FIRST LIMIT 200\n');
+        parts.add('    - If the user asks for "no recent activities", "stale accounts", "accounts with open opps but no activity", or similar, prefer LastActivityDate on Account over querying Task and Event separately.\n');
     }
 
     // ─── Data Cloud Rules (24) — Credit/Usage Queries ────────────
@@ -204,9 +211,12 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('User: "Write a summary of all recent activity with Meridian Financial"\n');
         parts.add('Output: {"queries":[{"purpose":"Account lookup","soql":"SELECT Id, Name, OwnerId, Owner.Name, Industry, Type FROM Account WHERE Name LIKE \'%Meridian Financial%\' LIMIT 5"},{"purpose":"Count of recent tasks","soql":"SELECT COUNT() FROM Task WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Meridian Financial%\') AND CreatedDate = LAST_N_DAYS:90"},{"purpose":"Recent tasks","soql":"SELECT Id, Subject, Status, TaskSubtype, ActivityDate, CreatedDate, Who.Name, Owner.Name FROM Task WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Meridian Financial%\') AND CreatedDate = LAST_N_DAYS:90 ORDER BY CreatedDate DESC LIMIT 200"},{"purpose":"Count of recent events","soql":"SELECT COUNT() FROM Event WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Meridian Financial%\') AND CreatedDate = LAST_N_DAYS:90"},{"purpose":"Recent events","soql":"SELECT Id, Subject, ActivityDate, StartDateTime, EndDateTime, Type, Who.Name, Owner.Name FROM Event WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%Meridian Financial%\') AND CreatedDate = LAST_N_DAYS:90 ORDER BY StartDateTime DESC LIMIT 200"}]}\n');
         parts.add('NOTE: ALWAYS use LIKE \'%partial name%\' in a subquery for AccountId when the user mentions an account by name. The user may say "Meridian Financial" but the actual Account name is "Meridian Financial Services". Direct Name = \'...\' will fail.\n\n');
+        parts.add('Example 6 — Accounts with open opportunities but no recent activity:\n');
+        parts.add('User: "Accounts with open opps but no recent activities"\n');
+        parts.add('Output: {"queries":[{"purpose":"Count of accounts with open opportunities but no recent activity","soql":"SELECT COUNT() FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE IsClosed = false) AND (LastActivityDate = NULL OR LastActivityDate < LAST_N_DAYS:30)"},{"purpose":"Accounts with open opportunities but no recent activity","soql":"SELECT Id, Name, Industry, Type, LastActivityDate FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE IsClosed = false) AND (LastActivityDate = NULL OR LastActivityDate < LAST_N_DAYS:30) ORDER BY LastActivityDate ASC NULLS FIRST LIMIT 200"}]}\n\n');
 
         if (shouldIncludeCreateRules(intentType)) {
-            parts.add('Example 6 — Log a call (create action):\n');
+            parts.add('Example 7 — Log a call (create action):\n');
             parts.add('User: "Log a call with Sarah about the renewal"\n');
             parts.add('Output: {"action":"create_execute","objectApiName":"Task","fields":{"Subject":"Call: Renewal Discussion","TaskSubtype":"Call","Status":"Completed","ActivityDate":"' + String.valueOf(Date.today()) + '","WhoId":"Sarah"}}\n\n');
         }
@@ -230,6 +240,8 @@ public with sharing class AgentforceWorkspaceAnalysisService {
             parts.add('For create opportunity: {"action":"create_execute","objectApiName":"Opportunity","fields":{"Name":"Deal Name","StageName":"Qualification","CloseDate":"2026-06-30","AccountId":"Company","Amount":50000}}\n');
             parts.add('For updating fields on a pending record: {"action":"update_execute","recordId":"001Hu0000XXXXX","objectApiName":"Account","fields":{"Phone":"555-1234","Website":"https://www.example.com"}}\n');
             parts.add('For declining a pending field update: {"action":"update_cancel"}\n');
+            parts.add('For confirming a pending bulk update: {"action":"update_execute","objectApiName":"Opportunity","recordIds":["006...","006..."],"fields":{"CloseDate":"2026-12-31"}}\n');
+            parts.add('For cancelling a pending bulk update: {"action":"update_cancel"}\n');
             parts.add('For creating MULTIPLE records: {"actions":[{"action":"create_execute","objectApiName":"Account","fields":{"Name":"Company"}},{"action":"create_execute","objectApiName":"Contact","fields":{"FirstName":"Jane","LastName":"Smith","AccountId":"Company"}}]}\n');
         }
 
@@ -278,9 +290,16 @@ public with sharing class AgentforceWorkspaceAnalysisService {
 
         parts.add('**VOICE & TONE:**\n');
         parts.add('- You are a helpful business analyst talking to a colleague. Be warm, direct, and insightful.\n');
-        parts.add('- Address the user by first name (' + data.userName + ').\n');
+        parts.add('- Address the user by first name only (' + data.userName + '). Never use their full name.\n');
         parts.add('- Write in plain business English. Sound like a smart coworker, not a database.\n');
         parts.add('- Focus on WHAT the data means and WHY it matters.\n\n');
+        parts.add('**USER IDENTITY GUARDRAILS:**\n');
+        parts.add('- The logged-in Salesforce user for this conversation is exactly "' + data.userFullName + '" and their first name is exactly "' + data.userName + '".\n');
+        parts.add('- Query results may contain many other person names (contacts, deal owners, customers, executives). Those names are CRM data, not the logged-in user.\n');
+        parts.add('- NEVER greet, address, or refer to the logged-in user as any name other than "' + data.userName + '".\n');
+        parts.add('- NEVER output the logged-in user\'s full name "' + data.userFullName + '" in user-facing prose. If you need to address the user, use only "' + data.userName + '" or "you".\n');
+        parts.add('- Unless you are drafting an email to a third party, prefer "you" over any person name in the opening sentence.\n');
+        parts.add('- If a result row mentions someone named Michael, Sarah, Robert, or any other person, do not treat that as the user. Even if the CRM data contains "' + data.userFullName + '", still present the user as "' + data.userName + '".\n\n');
 
         parts.add('**ABSOLUTELY DO NOT INCLUDE:**\n');
         parts.add('- Salesforce record IDs (e.g., 005Hu00000...)\n');
@@ -297,7 +316,7 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('- Use <hr/> sparingly — only between major sections\n');
         parts.add('- Keep bullet points concise — 1 line each\n');
         parts.add('- **PREFER <table> for comparisons and grouped data.** When the data has 3+ items with shared dimensions (e.g., stages, types, reps, time periods), present it as a clean HTML table with <thead> and <tbody>. Tables are far easier to scan than bullet lists for numeric comparisons. Use <b> on standout values (highest, lowest, growth %). Example: stage breakdown, rep leaderboard, monthly trend, type comparison.\n');
-        String fullName = String.isNotBlank(data.userFullName) ? data.userFullName : data.userName;
+        String displayFirstName = String.isNotBlank(data.userName) ? data.userName : data.userFullName;
         parts.add('- **EMAIL DRAFTS — RECIPIENT SELECTION:** When drafting an email, ALWAYS select a real contact from the QUERY RESULTS. Follow this strict priority order:\n');
         parts.add('  (1) FIRST CHOICE — Contact with Role = "Decision Maker" in OpportunityContactRole on a recent open opportunity for this account\n');
         parts.add('  (2) Contact with Role = "Economic Buyer", "Champion", or "Executive Sponsor" in OpportunityContactRole on a recent open opportunity\n');
@@ -309,7 +328,7 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('  (8) Any contact with a non-blank Email field\n');
         parts.add('  (9) If NO contacts exist in the data at all, use the account name with a placeholder email and explain in the intro that no contacts were found.\n');
         parts.add('  RULES: NEVER invent a name like "Decision Maker" or "Key Contact". Use the EXACT Name and Email from the query results. If the chosen contact has no Email, write their name but note the email is missing. If you picked someone who is NOT obviously a decision maker, add one sentence in your intro explaining why (e.g. "I couldn\'t find a decision maker on record, so I\'ve addressed this to [Name], [Title], who is the most senior contact on record.").\n');
-        parts.add('- **EMAIL DRAFT FORMAT:** Include the full email directly in your HTML response inside a <blockquote> element. Add a brief intro sentence (including any recipient-selection explanation), then output: <blockquote><p><b>To:</b> [Real Name from data] &lt;[real.email@company.com from data]&gt;</p><p><b>Subject:</b> Subject Line</p><p>Hi [First name],</p><p>[Body paragraph]</p><p>Best regards,<br>' + fullName + '</p></blockquote>. Sign with ' + fullName + '. NEVER use "[Your Name]". Skip the CHART block for email drafts. Still include SUGGESTIONS.\n');
+        parts.add('- **EMAIL DRAFT FORMAT:** Include the full email directly in your HTML response inside a <blockquote> element. Add a brief intro sentence (including any recipient-selection explanation), then output: <blockquote><p><b>To:</b> [Real Name from data] &lt;[real.email@company.com from data]&gt;</p><p><b>Subject:</b> Subject Line</p><p>Hi [First name],</p><p>[Body paragraph]</p><p>Best regards,<br>' + displayFirstName + '</p></blockquote>. When you refer to or sign as the current user, use only their first name (' + displayFirstName + '). NEVER use their full name. NEVER use "[Your Name]". Skip the CHART block for email drafts. Still include SUGGESTIONS.\n');
 
         // Inject record link table so the LLM can embed clickable links
         if (data.recordLinks != null && !data.recordLinks.isEmpty()) {
@@ -346,21 +365,29 @@ public with sharing class AgentforceWorkspaceAnalysisService {
             parts.add('<h2>Recommendations</h2>');
             parts.add('<ul><li>[Specific action based on the data]</li></ul>');
             parts.add('<hr/>');
-            parts.add('<p><b>[Conversational follow-up]</b> — End with a brief, natural question inviting the user to go deeper into the data. Reference specific records or patterns from your analysis. Examples: "Want me to dig into City of Irvine\'s meeting history?" or "I noticed Omega appears across multiple segments — should I compare their deals side by side?" Keep it to 1-2 sentences.</p>');
+            parts.add('<p><b>[Conversational follow-up]</b> — End with a brief, natural question inviting the user to go deeper into the data. Reference specific records or patterns from your analysis. Examples: "Want me to dig into City of Irvine\'s meeting history?" or "I noticed Omega appears across multiple segments — should I compare their deals side by side?" Keep it to 1-2 sentences. The follow-up must be a COMPLETE question. Never begin it with the user\'s name. Never write fragments like "' + data.userName + ', or show you..." or "' + data.userName + ', want me to...". Start with a clean question such as "Would you like me to...", "Want me to...", or "Should I...?"</p>');
         }
 
         parts.add('\n\n## CHART VISUALIZATION — MANDATORY WHEN DATA HAS NUMBERS\n');
-        parts.add('When your analysis includes a table or list with numeric data (amounts, counts, percentages, rankings), you MUST output a CHART block AFTER your HTML and BEFORE the SUGGESTIONS block. The UI renders this as an interactive chart below the chat.\n');
-        parts.add('Format: <CHART>{"chartType":"bar|horizontalBar|donut","title":"Short Chart Title","valueLabel":"Amount","valuePrefix":"$","valueSuffix":"","items":[{"label":"Category","value":1234},{"label":"Other","value":567}]}</CHART>\n');
+        parts.add('When your analysis includes a table or list with numeric data (amounts, counts, percentages, rankings), you MUST output a CHART block AFTER your HTML and BEFORE the SUGGESTIONS block. The UI renders this as an interactive visualization below the chat.\n');
+        parts.add('Format: <CHART>{"chartType":"horizontalBar|bar|donut|line|funnel|metricStrip","title":"Short Chart Title","valueLabel":"Amount","valuePrefix":"$","valueSuffix":"","items":[{"label":"Category","value":1234},{"label":"Other","value":567}]}</CHART>\n');
         parts.add('Chart type selection:\n');
         parts.add('- "horizontalBar" — DEFAULT CHOICE for ranked data, leaderboards, account comparisons, or any list with long labels. This is the most common and readable chart type.\n');
-        parts.add('- "bar" — Use for time series, monthly/quarterly trends, or when labels are short (stage names, months).\n');
+        parts.add('- "bar" — Use for short-label comparisons or ordered buckets like stage names, months, quarters, or priorities when a column chart is easiest to scan.\n');
         parts.add('- "donut" — Use for part-of-whole breakdowns where percentages are the focus (pipeline by stage %, distribution by type).\n');
+        parts.add('- "line" — Use for trends over time, momentum, or period-over-period movement. Only use when labels are in chronological order.\n');
+        parts.add('- "funnel" — Use for ordered process stages with step-down progression or conversion (lead funnel, lifecycle stages, case workflow). Do NOT use for unordered categories.\n');
+        parts.add('- "metricStrip" — Use for 1-4 headline KPIs when the story is the key numbers themselves, not a distribution.\n');
         parts.add('Rules:\n');
+        parts.add('- Pick the SINGLE best default visualization for the answer. The UI can rotate through alternates, so optimize the default for fastest comprehension.\n');
         parts.add('- Pick the SINGLE most impactful dataset from your analysis. Usually the data you put in a <table>.\n');
         parts.add('- Keep to 3-10 items. Combine smaller items into "Other" if needed.\n');
         parts.add('- Use raw numeric values (not formatted strings). valuePrefix "$" for currency, valueSuffix "%" for percentages.\n');
         parts.add('- Do NOT include a "color" property on items.\n');
+        parts.add('- For "metricStrip", keep to 1-4 items and use concise labels.\n');
+        parts.add('- For "metricStrip", if KPIs use mixed units, set units on EACH item with item-level "valuePrefix" and/or "valueSuffix" instead of using one chart-level prefix for all cards. Example: {"label":"Deal Value","value":95000,"valuePrefix":"$"}, {"label":"Probability","value":90,"valueSuffix":"%"}, {"label":"Days to Close","value":26}.\n');
+        parts.add('- For "line", include at least 3 ordered points.\n');
+        parts.add('- For "funnel", order items from widest/highest stage first to narrowest/lowest stage last.\n');
         parts.add('- ONLY skip the CHART block for: single-record lookups, text-only results (emails, summaries with no numbers), or when no numeric comparison exists.\n\n');
 
         parts.add('AFTER your HTML and CHART blocks, you MUST output this block on its own line:\n');
@@ -383,6 +410,173 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('- ALWAYS include the <SUGGESTIONS> block at the very end — this is required.\n');
 
         return String.join(parts, '');
+    }
+
+    /**
+     * Final safety net for identity drift. If the model directly addresses the user
+     * with a different first name in the opening HTML, rewrite that salutation to the
+     * authenticated running user's first name. EMAIL_DRAFT blocks must be removed
+     * before calling this helper so recipient greetings are not modified.
+     */
+    public static String enforceRunningUserIdentity(String rawResponse, String userFirstName, String userFullName) {
+        if (String.isBlank(rawResponse) || String.isBlank(userFirstName)) {
+            return rawResponse;
+        }
+
+        String safeFirstName = userFirstName.trim();
+        String safeFullName = String.isNotBlank(userFullName) ? userFullName.trim() : '';
+        String sanitized = rewriteTagDirectAddress(rawResponse, safeFirstName, safeFullName);
+
+        // Handle non-HTML-leading responses just in case the model emits plain text first.
+        sanitized = rewriteStartOfStringAddress(sanitized, safeFirstName, safeFullName);
+        sanitized = normalizeAwkwardFollowUpQuestion(sanitized, safeFirstName, safeFullName);
+        return sanitized;
+    }
+
+    @TestVisible
+    private static String normalizeAwkwardFollowUpQuestion(String text, String userFirstName, String userFullName) {
+        if (String.isBlank(text) || String.isBlank(userFirstName)) {
+            return text;
+        }
+
+        List<String> badPrefixes = new List<String>{
+            '<p><b>' + userFirstName + ', or ',
+            '<p>' + userFirstName + ', or ',
+            '<li><b>' + userFirstName + ', or ',
+            '<li>' + userFirstName + ', or ',
+            userFirstName + ', or '
+        };
+        if (String.isNotBlank(userFullName)) {
+            badPrefixes.add('<p><b>' + userFullName + ', or ');
+            badPrefixes.add('<p>' + userFullName + ', or ');
+            badPrefixes.add('<li><b>' + userFullName + ', or ');
+            badPrefixes.add('<li>' + userFullName + ', or ');
+            badPrefixes.add(userFullName + ', or ');
+        }
+
+        for (String prefix : badPrefixes) {
+            if (text.contains(prefix)) {
+                Integer lastTagEnd = prefix.lastIndexOf('>');
+                String replacement = lastTagEnd == -1
+                    ? 'Would you like me to '
+                    : prefix.substring(0, lastTagEnd + 1) + 'Would you like me to ';
+                text = text.replace(prefix, replacement);
+            }
+        }
+        return text;
+    }
+
+    @TestVisible
+    private static String rewriteTagDirectAddress(String text, String userFirstName, String userFullName) {
+        List<String> tags = new List<String>{ '<p>', '<li>', '<h1>', '<h2>', '<h3>' };
+        Integer searchFrom = 0;
+
+        while (searchFrom < text.length()) {
+            Integer bestIdx = -1;
+            String matchedTag = null;
+
+            for (String tag : tags) {
+                Integer idx = text.indexOf(tag, searchFrom);
+                if (idx != -1 && (bestIdx == -1 || idx < bestIdx)) {
+                    bestIdx = idx;
+                    matchedTag = tag;
+                }
+            }
+
+            if (bestIdx == -1 || matchedTag == null) {
+                return text;
+            }
+
+            Integer contentStart = bestIdx + matchedTag.length();
+            if (text.substring(contentStart).startsWith('<b>')) {
+                contentStart += 3;
+            }
+
+            String rewritten = rewriteAddressAtPosition(text, contentStart, userFirstName, userFullName);
+            if (rewritten != text) {
+                return rewritten;
+            }
+            searchFrom = contentStart;
+        }
+
+        return text;
+    }
+
+    @TestVisible
+    private static String rewriteStartOfStringAddress(String text, String userFirstName, String userFullName) {
+        Integer start = 0;
+        while (start < text.length() && isWhitespace(text.substring(start, start + 1))) {
+            start++;
+        }
+        return rewriteAddressAtPosition(text, start, userFirstName, userFullName);
+    }
+
+    private static Boolean isRunningUserName(String candidate, String userFirstName, String userFullName) {
+        if (String.isBlank(candidate)) return false;
+        if (candidate.equalsIgnoreCase(userFirstName)) return true;
+        if (String.isNotBlank(userFullName) && candidate.equalsIgnoreCase(userFullName)) return true;
+        if (String.isNotBlank(userFullName)) {
+            for (String token : userFullName.split('\\s+')) {
+                if (candidate.equalsIgnoreCase(token)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static Boolean isAllowedDirectAddress(String candidate, String userFirstName) {
+        return String.isNotBlank(candidate) && candidate.equalsIgnoreCase(userFirstName);
+    }
+
+    private static String rewriteAddressAtPosition(String text, Integer start, String userFirstName, String userFullName) {
+        if (start == null || start < 0 || start >= text.length()) {
+            return text;
+        }
+
+        Integer cursor = start;
+        while (cursor < text.length() && isWhitespace(text.substring(cursor, cursor + 1))) {
+            cursor++;
+        }
+
+        List<String> greetingPrefixes = new List<String>{
+            'Hi ', 'Hello ', 'Hey ', 'Good morning ', 'Good afternoon ', 'Good evening '
+        };
+        for (String prefix : greetingPrefixes) {
+            if (text.substring(cursor).startsWith(prefix)) {
+                cursor += prefix.length();
+                break;
+            }
+        }
+
+        Integer nameStart = cursor;
+        while (cursor < text.length() && isAddressNameCharacter(text.substring(cursor, cursor + 1))) {
+            cursor++;
+        }
+
+        if (cursor == nameStart || cursor >= text.length()) {
+            return text;
+        }
+
+        String candidate = text.substring(nameStart, cursor);
+        String punctuation = text.substring(cursor, cursor + 1);
+        if ((punctuation != ',' && punctuation != '!') || isAllowedDirectAddress(candidate, userFirstName)) {
+            return text;
+        }
+
+        return text.substring(0, nameStart) + userFirstName + text.substring(cursor);
+    }
+
+    private static Boolean isNameCharacter(String ch) {
+        return ch != null && 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\'-'.contains(ch);
+    }
+
+    private static Boolean isAddressNameCharacter(String ch) {
+        return isNameCharacter(ch) || ch == ' ';
+    }
+
+    private static Boolean isWhitespace(String ch) {
+        return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t';
     }
 
     // ─── Models API ───────────────────────────────────────────
@@ -463,7 +657,7 @@ public with sharing class AgentforceWorkspaceAnalysisService {
             try {
                 Map<String, Object> chartMap = (Map<String, Object>) JSON.deserializeUntyped(chartJson);
                 AgentforceWorkspaceModels.ChartData cd = new AgentforceWorkspaceModels.ChartData();
-                cd.chartType   = (String) chartMap.get('chartType');
+                cd.chartType   = normalizeChartType((String) chartMap.get('chartType'));
                 cd.title       = (String) chartMap.get('title');
                 cd.valueLabel  = (String) chartMap.get('valueLabel');
                 cd.valuePrefix = (String) chartMap.get('valuePrefix');
@@ -475,6 +669,8 @@ public with sharing class AgentforceWorkspaceAnalysisService {
                         ci.label = (String) im.get('label');
                         ci.value = im.get('value') != null ? Decimal.valueOf(String.valueOf(im.get('value'))) : 0;
                         ci.color = (String) im.get('color');
+                        ci.valuePrefix = (String) im.get('valuePrefix');
+                        ci.valueSuffix = (String) im.get('valueSuffix');
                         cd.items.add(ci);
                     }
                 }
@@ -580,6 +776,34 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         }
 
         return suggestions;
+    }
+
+    @TestVisible
+    private static String normalizeChartType(String chartType) {
+        if (String.isBlank(chartType)) return 'horizontalBar';
+
+        String normalized = chartType.trim().toLowerCase();
+        if (normalized == 'horizontalbar' || normalized == 'horizontal_bar' || normalized == 'hbar') {
+            return 'horizontalBar';
+        }
+        if (normalized == 'bar' || normalized == 'column' || normalized == 'columnchart') {
+            return 'bar';
+        }
+        if (normalized == 'donut' || normalized == 'doughnut' || normalized == 'pie') {
+            return 'donut';
+        }
+        if (normalized == 'line' || normalized == 'linechart' || normalized == 'trend') {
+            return 'line';
+        }
+        if (normalized == 'funnel' || normalized == 'funnelchart') {
+            return 'funnel';
+        }
+        if (normalized == 'metricstrip' || normalized == 'kpistrip'
+                || normalized == 'kpigrid' || normalized == 'metrics'
+                || normalized == 'metricgrid') {
+            return 'metricStrip';
+        }
+        return 'horizontalBar';
     }
 
     /** Convert plain text email body (with \n) to HTML paragraphs. */
