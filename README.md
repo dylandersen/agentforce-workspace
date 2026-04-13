@@ -294,7 +294,7 @@ The intent classifier returns a structured `IntentResult` with `intent`, `plan`,
 | Bundle | Responsibility |
 |---|---|
 | `agentforceWorkspace` | Main shell, chat timeline, progress system, model picker, caching, usage tracking, org-schema context loading, orchestration |
-| `investigatorRecordList` | Tabbed record grids with sorting, navigation, and expandable list views |
+| `investigatorRecordList` | Tabbed record grids with sorting, navigation, expandable list views, and export paths into native Salesforce reports |
 | `investigatorCreatedRecord` | Action-result card for created, updated, or deleted records |
 | `investigatorChart` | Chart rendering for structured numeric summaries |
 | `investigatorMapView` | Geographic visualization for records with address data |
@@ -317,6 +317,8 @@ Details Panel
 ```
 
 The workspace tracks action semantics explicitly. A successful update no longer renders as a creation event. The usage estimate section is collapsible and updates incrementally per turn.
+
+Related record lists also connect cleanly to Salesforce reporting. When the workspace surfaces a structured set of related records, users can move that same context into native reports instead of treating the list as a dead-end view. That keeps the experience aligned with standard Salesforce analytics workflows while still preserving the conversational entry point that brought the data into focus.
 
 ---
 
