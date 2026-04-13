@@ -5,8 +5,9 @@
  */
 public with sharing class AgentforceWorkspaceRecordCreator {
 
-    /** Optional fields offered to the user for follow-up completion after record creation. */
-    private static final Map<String, List<String>> OPTIONAL_FIELDS_TO_PROMPT = new Map<String, List<String>>{
+    /** Optional fields offered to the user for follow-up completion after record creation.
+     *  Well-known overrides. For unlisted objects, getOptionalFieldsForObject() resolves dynamically. */
+    private static final Map<String, List<String>> KNOWN_OPTIONAL_FIELDS = new Map<String, List<String>>{
         'Account' => new List<String>{ 'Phone', 'Website', 'Description', 'NumberOfEmployees', 'AnnualRevenue', 'Type' },
         'Contact' => new List<String>{ 'Phone', 'MobilePhone', 'Email', 'Title', 'Department' },
         'Case'    => new List<String>{ 'Priority', 'Type', 'Origin', 'Description' },
@@ -14,10 +15,6 @@ public with sharing class AgentforceWorkspaceRecordCreator {
         'Opportunity' => new List<String>{ 'Amount', 'Probability', 'NextStep', 'Description', 'Type' },
         'Task'    => new List<String>{ 'Description', 'Priority' },
         'Event'   => new List<String>{ 'Location', 'Description' }
-    };
-
-    private static final Set<String> CREATABLE_OBJECTS = new Set<String>{
-        'Account', 'Contact', 'Case', 'Lead', 'Opportunity', 'Task', 'Event'
     };
 
     /** Try to parse the LLM response as a create/update action JSON. Returns null if not an action. */
@@ -70,8 +67,8 @@ public with sharing class AgentforceWorkspaceRecordCreator {
             return errorResult;
         }
 
-        if (!CREATABLE_OBJECTS.contains(objectApiName)) {
-            errorResult.response = '<p>I can create Account, Contact, Case, Lead, Opportunity, Task, and Event records. Would you like me to create one of those?</p>';
+        if (!AgentforceWorkspaceSchemaService.isCreateable(objectApiName)) {
+            errorResult.response = '<p>You don\'t have permission to create ' + objectApiName + ' records, or the object does not exist. Please check your access and try again.</p>';
             return errorResult;
         }
 
@@ -131,7 +128,7 @@ public with sharing class AgentforceWorkspaceRecordCreator {
                 queryFieldSet.add('Name');
             }
             // Also query optional fields so we can identify which are still blank
-            List<String> optFields = OPTIONAL_FIELDS_TO_PROMPT.get(objectApiName);
+            List<String> optFields = getOptionalFieldsForObject(objectApiName);
             if (optFields != null) queryFieldSet.addAll(new Set<String>(optFields));
 
             String queryStr = 'SELECT ' + String.join(new List<String>(queryFieldSet), ', ') +
@@ -385,7 +382,321 @@ public with sharing class AgentforceWorkspaceRecordCreator {
         return result;
     }
 
+    /** Build a pending bulk-update payload and confirmation preview. */
+    public static AgentforceWorkspaceModels.ChatResult buildBulkUpdatePreview(
+            String objectApiName,
+            List<SObject> matchedRecords,
+            Map<String, String> fields,
+            String userName) {
+        AgentforceWorkspaceModels.ChatResult result = new AgentforceWorkspaceModels.ChatResult();
+        if (String.isBlank(objectApiName) || matchedRecords == null || matchedRecords.isEmpty() || fields == null || fields.isEmpty()) {
+            result.response = '<p>I need matched records and at least one field before I can preview a bulk update.</p>';
+            return result;
+        }
+        if (matchedRecords.size() > 10) {
+            result.response = '<p>Please preview 10 records or fewer in a single request.</p>';
+            return result;
+        }
+
+        Schema.SObjectType sObjType = Schema.getGlobalDescribe().get(objectApiName);
+        if (sObjType == null) {
+            result.response = '<p>Unknown object type: ' + objectApiName + '</p>';
+            return result;
+        }
+
+        Map<String, Schema.SObjectField> fieldMap = sObjType.getDescribe().fields.getMap();
+        AgentforceWorkspaceModels.PendingBulkUpdate pending = new AgentforceWorkspaceModels.PendingBulkUpdate();
+        pending.objectApiName = objectApiName;
+        pending.matchedCount = matchedRecords.size();
+        pending.fields.putAll(fields);
+
+        for (SObject matchedRecord : matchedRecords) {
+            if (matchedRecord == null || matchedRecord.Id == null) continue;
+            pending.recordIds.add(String.valueOf(matchedRecord.Id));
+            AgentforceWorkspaceModels.BulkUpdateRecordRef recordRef =
+                new AgentforceWorkspaceModels.BulkUpdateRecordRef();
+            recordRef.recordId = String.valueOf(matchedRecord.Id);
+            recordRef.recordName = getRecordName(objectApiName, matchedRecord);
+            pending.records.add(recordRef);
+        }
+
+        result.pendingBulkUpdate = pending;
+        result.response = buildBulkUpdatePreviewHtml(userName, sObjType.getDescribe().getLabel(), pending, fieldMap);
+        result.suggestions = new List<String>{ 'Apply these updates', 'Cancel' };
+        return result;
+    }
+
+    /** Execute a confirmed bulk update across 1-10 records of the same object type. */
+    public static AgentforceWorkspaceModels.ChatResult handleBulkUpdateExecute(
+            Map<String, Object> actionResult,
+            String userName) {
+        AgentforceWorkspaceModels.ChatResult result = new AgentforceWorkspaceModels.ChatResult();
+        if (actionResult == null) {
+            result.response = '<p>I need bulk update details before I can make changes.</p>';
+            return result;
+        }
+
+        Object objectApiNameValue = actionResult.get('objectApiName');
+        String objectApiName = objectApiNameValue == null ? null : String.valueOf(objectApiNameValue);
+
+        List<String> recordIds = new List<String>();
+        String recordIdPayloadError = normalizeStringList(actionResult.get('recordIds'), recordIds);
+        if (recordIdPayloadError != null) {
+            result.response = '<p>' + recordIdPayloadError + '</p>';
+            return result;
+        }
+
+        Map<String, String> fields = new Map<String, String>();
+        String fieldPayloadError = normalizeStringMap(actionResult.get('fields'), fields);
+        if (fieldPayloadError != null) {
+            result.response = '<p>' + fieldPayloadError + '</p>';
+            return result;
+        }
+
+        if (String.isBlank(objectApiName)) {
+            result.response = '<p>I need to know which object type to update.</p>';
+            return result;
+        }
+        if (recordIds.isEmpty()) {
+            result.response = '<p>I need at least one record to update.</p>';
+            return result;
+        }
+        if (recordIds.size() > 10) {
+            result.response = '<p>Please update 10 records or fewer in a single request.</p>';
+            return result;
+        }
+        if (fields.isEmpty()) {
+            result.response = '<p>I need at least one field value before I can update these records.</p>';
+            return result;
+        }
+
+        Schema.SObjectType sObjType = Schema.getGlobalDescribe().get(objectApiName);
+        if (sObjType == null) {
+            result.response = '<p>Unknown object type: ' + objectApiName + '</p>';
+            return result;
+        }
+
+        Schema.DescribeSObjectResult objectDescribe = sObjType.getDescribe();
+        if (!objectDescribe.isUpdateable()) {
+            result.response = '<p>You don\'t have permission to update ' + objectApiName + ' records.</p>';
+            return result;
+        }
+
+        Map<String, Schema.SObjectField> fieldMap = objectDescribe.fields.getMap();
+        String fieldValidationError = validateBulkUpdateFields(fields, fieldMap);
+        if (fieldValidationError != null) {
+            result.response = '<p>' + fieldValidationError + '</p>';
+            return result;
+        }
+
+        Map<String, Object> typedFields = new Map<String, Object>();
+        String fieldValueError = convertBulkFieldValues(fields, fieldMap, typedFields);
+        if (fieldValueError != null) {
+            result.response = '<p>' + fieldValueError + '</p>';
+            return result;
+        }
+
+        List<SObject> recordsToUpdate = new List<SObject>();
+        for (String recordIdValue : recordIds) {
+            if (!isRecordId(recordIdValue)) {
+                result.response = '<p>I found an invalid record Id in this bulk update request.</p>';
+                return result;
+            }
+
+            Id recordId = (Id) recordIdValue;
+            if (recordId.getSObjectType() != sObjType) {
+                result.response = '<p>I can only update one object type per request.</p>';
+                return result;
+            }
+
+            SObject recordToUpdate = sObjType.newSObject(recordId);
+            for (String fieldName : typedFields.keySet()) {
+                recordToUpdate.put(fieldName, typedFields.get(fieldName));
+            }
+            recordsToUpdate.add(recordToUpdate);
+        }
+
+        try {
+            update recordsToUpdate;
+
+            result.response = buildBulkUpdateSuccessHtml(
+                userName,
+                objectDescribe.getLabel(),
+                recordsToUpdate.size(),
+                typedFields,
+                fieldMap
+            );
+            result.pendingBulkUpdateCleared = true;
+            result.suggestions = new List<String>{ 'Show updated records', 'Make another update' };
+            return result;
+        } catch (DmlException e) {
+            result.response = '<p>I wasn\'t able to finish the bulk update: ' + e.getDmlMessage(0) + '</p>';
+            return result;
+        }
+    }
+
+    /** Clear a pending bulk-update preview without applying any changes. */
+    public static AgentforceWorkspaceModels.ChatResult handleBulkUpdateCancel(String userName) {
+        AgentforceWorkspaceModels.ChatResult result = new AgentforceWorkspaceModels.ChatResult();
+        result.response = '<p>No changes were made, ' + userName + '. I cleared the pending bulk update.</p>';
+        result.pendingBulkUpdateCleared = true;
+        result.suggestions = new List<String>{ 'Review another update', 'Show my records' };
+        return result;
+    }
+
     // ─── Private Helpers ──────────────────────────────────────────────────────
+
+    private static String normalizeStringList(Object rawValue, List<String> values) {
+        if (rawValue == null) return null;
+
+        try {
+            for (Object item : (List<Object>) rawValue) {
+                if (item != null) values.add(String.valueOf(item));
+            }
+            return null;
+        } catch (Exception e) {
+            return 'I couldn\'t read the recordIds payload format for this bulk update.';
+        }
+    }
+
+    private static String normalizeStringMap(Object rawValue, Map<String, String> values) {
+        if (rawValue == null) return null;
+
+        try {
+            Map<String, Object> rawMap = (Map<String, Object>) rawValue;
+            for (String key : rawMap.keySet()) {
+                values.put(key, rawMap.get(key) != null ? String.valueOf(rawMap.get(key)) : null);
+            }
+            return null;
+        } catch (Exception e) {
+            return 'I couldn\'t read the fields payload format for this bulk update.';
+        }
+    }
+
+    private static String validateBulkUpdateFields(
+            Map<String, String> fields,
+            Map<String, Schema.SObjectField> fieldMap) {
+        for (String fieldName : fields.keySet()) {
+            Schema.SObjectField fieldToken = fieldMap.get(fieldName.toLowerCase());
+            if (fieldToken == null) {
+                return 'I couldn\'t find the field ' + fieldName + ' on this object.';
+            }
+            if (!fieldToken.getDescribe().isUpdateable()) {
+                return 'You don\'t have permission to update the ' + fieldToken.getDescribe().getLabel() + ' field.';
+            }
+        }
+        return null;
+    }
+
+    private static String convertBulkFieldValues(
+            Map<String, String> fields,
+            Map<String, Schema.SObjectField> fieldMap,
+            Map<String, Object> typedValues) {
+        for (String fieldName : fields.keySet()) {
+            Schema.SObjectField fieldToken = fieldMap.get(fieldName.toLowerCase());
+            Schema.DescribeFieldResult fieldDescribe = fieldToken.getDescribe();
+            String rawValue = fields.get(fieldName);
+
+            if (String.isBlank(rawValue) || rawValue == 'null') {
+                return 'Please provide a valid value for ' + fieldDescribe.getLabel() + '.';
+            }
+
+            try {
+                Schema.DisplayType fieldType = fieldDescribe.getType();
+                if (fieldType == Schema.DisplayType.STRING ||
+                    fieldType == Schema.DisplayType.TEXTAREA ||
+                    fieldType == Schema.DisplayType.URL ||
+                    fieldType == Schema.DisplayType.EMAIL ||
+                    fieldType == Schema.DisplayType.PHONE ||
+                    fieldType == Schema.DisplayType.PICKLIST) {
+                    typedValues.put(fieldName, rawValue);
+                } else if (fieldType == Schema.DisplayType.CURRENCY ||
+                           fieldType == Schema.DisplayType.DOUBLE ||
+                           fieldType == Schema.DisplayType.PERCENT) {
+                    String cleanedDecimal = rawValue.replaceAll('[^0-9.\\-]', '');
+                    if (String.isBlank(cleanedDecimal)) {
+                        return 'Please provide a valid value for ' + fieldDescribe.getLabel() + '.';
+                    }
+                    typedValues.put(fieldName, Decimal.valueOf(cleanedDecimal));
+                } else if (fieldType == Schema.DisplayType.INTEGER) {
+                    String cleanedInteger = rawValue.replaceAll('[^0-9\\-]', '');
+                    if (String.isBlank(cleanedInteger)) {
+                        return 'Please provide a valid value for ' + fieldDescribe.getLabel() + '.';
+                    }
+                    typedValues.put(fieldName, Integer.valueOf(cleanedInteger));
+                } else if (fieldType == Schema.DisplayType.DATE) {
+                    typedValues.put(fieldName, Date.valueOf(rawValue));
+                } else if (fieldType == Schema.DisplayType.DATETIME) {
+                    typedValues.put(fieldName, Datetime.valueOf(rawValue.replace('T', ' ')));
+                } else if (fieldType == Schema.DisplayType.REFERENCE) {
+                    if (!isRecordId(rawValue)) {
+                        return 'Please provide a valid Salesforce record Id for ' + fieldDescribe.getLabel() + '.';
+                    }
+                    typedValues.put(fieldName, rawValue);
+                } else if (fieldType == Schema.DisplayType.BOOLEAN) {
+                    String lowered = rawValue.toLowerCase();
+                    if (lowered != 'true' && lowered != 'false') {
+                        return 'Please provide a valid value for ' + fieldDescribe.getLabel() + '.';
+                    }
+                    typedValues.put(fieldName, lowered == 'true');
+                } else {
+                    typedValues.put(fieldName, rawValue);
+                }
+            } catch (Exception e) {
+                return 'Please provide a valid value for ' + fieldDescribe.getLabel() + '.';
+            }
+        }
+
+        return typedValues.isEmpty()
+            ? 'I couldn\'t apply any of the requested bulk field updates.'
+            : null;
+    }
+
+    private static String buildBulkUpdatePreviewHtml(
+            String userName,
+            String objectLabel,
+            AgentforceWorkspaceModels.PendingBulkUpdate pending,
+            Map<String, Schema.SObjectField> fieldMap) {
+        List<String> fieldItems = new List<String>();
+        for (String fieldName : pending.fields.keySet()) {
+            fieldItems.add('<li><b>' + getFieldLabel(fieldName, fieldMap) + ':</b> ' + pending.fields.get(fieldName) + '</li>');
+        }
+
+        List<String> recordItems = new List<String>();
+        for (AgentforceWorkspaceModels.BulkUpdateRecordRef recordRef : pending.records) {
+            recordItems.add('<li>' + recordRef.recordName + '</li>');
+        }
+
+        return '<h1>Bulk Update Preview</h1>'
+            + '<p>' + userName + ', I found ' + pending.matchedCount + ' ' + objectLabel
+            + (pending.matchedCount == 1 ? ' record' : ' records') + ' ready for update.</p>'
+            + '<p>Please confirm I should apply these field changes:</p>'
+            + '<ul>' + String.join(fieldItems, '') + '</ul>'
+            + '<p>Matched records:</p>'
+            + '<ul>' + String.join(recordItems, '') + '</ul>';
+    }
+
+    private static String buildBulkUpdateSuccessHtml(
+            String userName,
+            String objectLabel,
+            Integer recordCount,
+            Map<String, Object> fields,
+            Map<String, Schema.SObjectField> fieldMap) {
+        List<String> fieldItems = new List<String>();
+        for (String fieldName : fields.keySet()) {
+            fieldItems.add('<li><b>' + getFieldLabel(fieldName, fieldMap) + ':</b> ' + String.valueOf(fields.get(fieldName)) + '</li>');
+        }
+
+        return '<h1>Bulk Update Complete</h1>'
+            + '<p>' + userName + ', I updated ' + recordCount + ' ' + objectLabel
+            + (recordCount == 1 ? ' record.' : ' records.') + '</p>'
+            + '<ul>' + String.join(fieldItems, '') + '</ul>';
+    }
+
+    private static String getFieldLabel(String fieldName, Map<String, Schema.SObjectField> fieldMap) {
+        Schema.SObjectField fieldToken = fieldMap.get(fieldName.toLowerCase());
+        return fieldToken != null ? fieldToken.getDescribe().getLabel() : fieldName;
+    }
 
     /**
      * Resolve name-based reference field values to actual Salesforce IDs.
@@ -497,7 +808,7 @@ public with sharing class AgentforceWorkspaceRecordCreator {
     private static AgentforceWorkspaceModels.PendingUpdate buildPendingUpdate(
             Id recordId, String objectApiName, SObject createdRecord,
             Map<String, Schema.SObjectField> fieldMap) {
-        List<String> optFields = OPTIONAL_FIELDS_TO_PROMPT.get(objectApiName);
+        List<String> optFields = getOptionalFieldsForObject(objectApiName);
         if (optFields == null || optFields.isEmpty()) return null;
 
         Map<String, Object> populated = createdRecord.getPopulatedFieldsAsMap();
@@ -850,5 +1161,34 @@ public with sharing class AgentforceWorkspaceRecordCreator {
         }
 
         return info;
+    }
+
+    /**
+     * Get optional fields to prompt for after record creation.
+     * Uses well-known overrides for standard objects; for custom objects,
+     * dynamically discovers updateable non-required fields via SchemaService.
+     */
+    private static List<String> getOptionalFieldsForObject(String objectApiName) {
+        if (KNOWN_OPTIONAL_FIELDS.containsKey(objectApiName)) {
+            return KNOWN_OPTIONAL_FIELDS.get(objectApiName);
+        }
+
+        // Dynamic resolution for custom/unlisted objects
+        AgentforceWorkspaceSchemaService.ObjectMeta meta = AgentforceWorkspaceSchemaService.describe(objectApiName);
+        if (meta == null || meta.fields == null) return null;
+
+        List<String> optFields = new List<String>();
+        Set<String> skipFields = new Set<String>{ 'id', 'createddate', 'lastmodifieddate', 'systemmodstamp',
+            'createdbyid', 'lastmodifiedbyid', 'isdeleted', 'ownerid' };
+
+        for (AgentforceWorkspaceSchemaService.FieldMeta f : meta.fields) {
+            if (optFields.size() >= 8) break;
+            if (skipFields.contains(f.apiName.toLowerCase())) continue;
+            if (f.isNameField) continue;
+            if (!f.isUpdateable) continue;
+            if (f.isRequired) continue;
+            optFields.add(f.apiName);
+        }
+        return optFields.isEmpty() ? null : optFields;
     }
 }

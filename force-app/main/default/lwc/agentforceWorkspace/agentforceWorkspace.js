@@ -6,9 +6,11 @@ import OPENAI_LOGO from "@salesforce/resourceUrl/OpenAI";
 import CLAUDE_LOGO from "@salesforce/resourceUrl/Claude";
 import NVIDIA_LOGO from "@salesforce/resourceUrl/nvidia";
 import buildQueries from "@salesforce/apex/AgentforceWorkspaceController.buildQueries";
+import classifyIntent from "@salesforce/apex/AgentforceWorkspaceController.classifyIntent";
 import analyzeResults from "@salesforce/apex/AgentforceWorkspaceController.analyzeResults";
 import getUserFirstName from "@salesforce/apex/AgentforceWorkspaceController.getUserFirstName";
 import getUserPhotoUrl from "@salesforce/apex/AgentforceWorkspaceController.getUserPhotoUrl";
+import getOrgSchemaContext from "@salesforce/apex/AgentforceWorkspaceController.getOrgSchemaContext";
 
 const CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
 
@@ -24,8 +26,8 @@ const CREDIT_COSTS = { basic: 2, standard: 4, advanced: 16 };
 const MODEL_CREDIT_TIER = {
   sfdc_ai__DefaultVertexAIGemini31FlashLite: "basic",
   sfdc_ai__DefaultVertexAIGeminiPro31: "standard",
-  sfdc_ai__DefaultGPT5: "standard",
   sfdc_ai__DefaultGPT52: "standard",
+  sfdc_ai__DefaultGPT54: "standard",
   sfdc_ai__DefaultBedrockNvidiaNemotronNano330b: "basic",
   sfdc_ai__DefaultBedrockAnthropicClaude45Sonnet: "standard",
   sfdc_ai__DefaultBedrockAnthropicClaude45Opus: "advanced"
@@ -34,8 +36,8 @@ const MODEL_CREDIT_TIER = {
 const MODELS = [
   { id: "sfdc_ai__DefaultVertexAIGemini31FlashLite", label: "Gemini 3.1 Flash", logoKey: "gemini", premium: false },
   { id: "sfdc_ai__DefaultVertexAIGeminiPro31",       label: "Gemini 3.1 Pro",   logoKey: "gemini", premium: false },
-  { id: "sfdc_ai__DefaultGPT5",                  label: "GPT-5",            logoKey: "openai", premium: false },
-  { id: "sfdc_ai__DefaultGPT52",                 label: "GPT-5.2",          logoKey: "openai", premium: false },
+  { id: "sfdc_ai__DefaultGPT52",                     label: "GPT-5.2",          logoKey: "openai", premium: false },
+  { id: "sfdc_ai__DefaultGPT54",                     label: "GPT-5.4",          logoKey: "openai", premium: false },
   { id: "sfdc_ai__DefaultBedrockNvidiaNemotronNano330b",  label: "Nemotron 3 Nano", logoKey: "nvidia", premium: false },
   { id: "sfdc_ai__DefaultBedrockAnthropicClaude45Sonnet", label: "Sonnet 4.5", logoKey: "claude", premium: false },
   { id: "sfdc_ai__DefaultBedrockAnthropicClaude45Opus",   label: "Opus 4.5",   logoKey: "claude", premium: true }
@@ -53,6 +55,8 @@ const DEFAULT_MODEL = MODELS[0].id;
 const CACHE_KEY = "agentforceWorkspace_session";
 const MODEL_KEY = "agentforceWorkspace_model";
 const TYPEWRITER_BLOCK_DELAY = 100;
+const THINKING_SHIMMER_TEXT = "Thinking...";
+const THINKING_TRANSITION_DELAY = 160;
 
 export default class AgentforceWorkspace extends NavigationMixin(LightningElement) {
   // ─── Landing State ───────────────────────────────────
@@ -89,6 +93,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   @track isCreatedRecordExpanded = false;
   @track _createdRecordBadgeVisible = false;
   @track _recordActionType = "created"; // "created" | "updated" | "deleted"
+  @track thinkingText = THINKING_SHIMMER_TEXT;
   @track mapAddresses = [];
   @track isMapExpanded = false;
   @track _mapBadgeVisible = false;
@@ -104,9 +109,13 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   _typewriterTimerIds = [];
   _cachedRecordTabs = [];
   _pendingRecordUpdate = null;
+  _pendingThinkingMessageId = null;
 
   agentIcon = AGENTFORCE_ICON;
   @track userPhotoUrl = '';
+
+  // ─── Org Schema Context ──────────────────────────────
+  _orgCustomObjects = [];
 
   // ─── Task Suggestions ────────────────────────────────
 
@@ -145,6 +154,16 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
       // Create (teal)
       { iconName: "utility:add",          iconWrapClass: "task-icon-wrap task-icon-create",    question: "Create a new account" }
     ];
+
+    // Mix in dynamic suggestions from the org's custom objects
+    if (this._orgCustomObjects && this._orgCustomObjects.length > 0) {
+      const customSuggestions = this._orgCustomObjects.slice(0, 5).map((obj) => ({
+        iconName: "utility:custom_apps",
+        iconWrapClass: "task-icon-wrap task-icon-custom",
+        question: `Show me recent ${obj.labelPlural || obj.label} records`
+      }));
+      ALL_TASKS.push(...customSuggestions);
+    }
 
     // Shuffle and pick 5 — use current hour as seed for session consistency
     const seed = new Date().getHours();
@@ -397,7 +416,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   }
 
   get showTypingIndicator() {
-    return this.isLoading;
+    return false;
   }
 
   get modelBtnClass() {
@@ -423,6 +442,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this._loadUserPhoto();
     this._restoreFromCache();
     this._loadUsageMetrics();
+    this._loadOrgSchema();
   }
 
   async _loadLandingHeadline() {
@@ -446,6 +466,15 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
       const url = await getUserPhotoUrl();
       if (url) this.userPhotoUrl = url;
     } catch (_e) { /* keep empty */ }
+  }
+
+  async _loadOrgSchema() {
+    try {
+      const objects = await getOrgSchemaContext();
+      if (objects && objects.length > 0) {
+        this._orgCustomObjects = objects;
+      }
+    } catch (_e) { /* schema is non-critical — fail silently */ }
   }
 
   disconnectedCallback() {
@@ -649,7 +678,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     try {
       const payload = {
         isLanding: this.isLanding,
-        messages: this.messages,
+        messages: this.messages.filter((msg) => !msg.isThinking),
         selectedModelId: this.selectedModelId,
         suggestedReplies: this.suggestedReplies,
         isDetailsPanelOpen: this.isDetailsPanelOpen,
@@ -817,6 +846,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this.agentSteps = [];
     this.sidebarCreatedRecord = null;
     this.sidebarCreatedRecords = [];
+    this._pendingThinkingMessageId = null;
     this._pendingRecordUpdate = null;
     this.isProgressExpanded = true;
     this.isRecordsExpanded = false;
@@ -918,6 +948,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
     this.suggestedReplies = [];
     this.messages = [...this.messages, this._makeMsg("user", text)];
+    this._pendingThinkingMessageId = this._addThinkingMessage();
     this.inputValue = "";
     this._clearInput();
     this.isLoading = true;
@@ -925,6 +956,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this.isDetailsPanelOpen = true;
     this._scrollToBottom();
     this._saveToCache();
+    let planStepId = null;
     // eslint-disable-next-line @lwc/lwc/no-async-operation
     setTimeout(() => {
       const input = this.template.querySelector(".chat-input");
@@ -941,20 +973,38 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
       await new Promise(r => setTimeout(r, 2000));
       this._completeStep(profileStepId);
 
-      // ── Step 1: Build queries + get records ──
-      const buildStepId = this._addStep("Understanding your intent...");
+      // ── Step 1: Understand intent first so the plan appears immediately ──
+      const understandStepId = this._addStep("Understanding your intent...");
+      let earlyPlanLabel = null;
 
+      try {
+        const intentResult = await classifyIntent({
+          userMessage: text,
+          conversationHistory: history
+        });
+        earlyPlanLabel = intentResult?.plan ?? null;
+      } catch (_intentError) {
+        // If the cheap classifier fails, continue with the main flow.
+      }
+
+      this._completeStep(understandStepId);
+
+      if (earlyPlanLabel) {
+        planStepId = this._addStep(`Plan: ${earlyPlanLabel}`);
+      }
+
+      // ── Step 2: Build queries + get records ──
       const queryResult = await buildQueries({
         userMessage: text,
         conversationHistory: history,
         modelName: this.selectedModelId
       });
 
-      this._completeStep(buildStepId);
-
       // Surface intent understanding from the reasoning engine
-      if (queryResult?.intentLabel) {
+      if (!planStepId && queryResult?.intentLabel) {
         this._addCompletedStep(`Plan: ${queryResult.intentLabel}`);
+      } else if (planStepId) {
+        this._completeStep(planStepId);
       }
       if (queryResult?.reasoningAttempts > 1) {
         this._addCompletedStep(`Refined approach (${queryResult.reasoningAttempts} attempts)...`);
@@ -1003,7 +1053,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
       if (!executionDataJson) {
         this._completeStep(analyzeStepId);
         const fallback = summary || "I couldn't process that question. Try rephrasing or switching to a different model.";
-        this.messages = [...this.messages, this._makeMsg("agent", `<p>${fallback}</p>`)];
+        await this._renderThinkingResponse(this._pendingThinkingMessageId, `<p>${fallback}</p>`);
         this._trackUsage(text, fallback);
         this._saveToCache();
       } else {
@@ -1021,7 +1071,10 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
 
         // Guard against empty AI responses
         if (!responseText || responseText.trim().length === 0) {
-          this.messages = [...this.messages, this._makeMsg("agent", "<p>I received an empty response from the AI. Please try your question again or try a different model.</p>")];
+          await this._renderThinkingResponse(
+            this._pendingThinkingMessageId,
+            "<p>I received an empty response from the AI. Please try your question again or try a different model.</p>"
+          );
           this._saveToCache();
           this.isLoading = false;
           this._scrollToBottom();
@@ -1029,7 +1082,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         }
 
         this._addCompletedStep("Response ready...");
-        await this._typewriterReveal(responseText);
+        await this._typewriterReveal(this._pendingThinkingMessageId, responseText);
 
         this._reconcileRecordTabs(responseText);
         this._trackUsage(text, responseText);
@@ -1095,6 +1148,9 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
         }
       }
     } catch (error) {
+      if (planStepId) {
+        this._completeStep(planStepId);
+      }
       const errMsg = error?.body?.message || error?.message || "";
       let userMessage;
       if (errMsg.includes("Models API") || errMsg.includes("generation") || errMsg.includes("AI")) {
@@ -1104,10 +1160,11 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
       } else {
         userMessage = "<p>Something went wrong while processing your request. Please try again or rephrase your question.</p>";
       }
-      this.messages = [...this.messages, this._makeMsg("agent", userMessage)];
+      await this._renderThinkingResponse(this._pendingThinkingMessageId, userMessage);
       this._saveToCache();
     } finally {
       this.isLoading = false;
+      this._pendingThinkingMessageId = null;
       this._scrollToBottom();
     }
   }
@@ -1180,7 +1237,7 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
   }
 
   _buildHistory() {
-    const turns = this.messages.filter(m => m.isAgent || m.isUser);
+    const turns = this.messages.filter(m => (m.isAgent || m.isUser) && !m.isThinking);
     const recent = turns.slice(-MAX_HISTORY_TURNS * 2);
     let history = recent
       .map((m) => (m.role === "user" ? "USER: " : "ASSISTANT: ") + m.content)
@@ -1203,50 +1260,94 @@ export default class AgentforceWorkspace extends NavigationMixin(LightningElemen
     this._typewriterTimerIds = [];
   }
 
-  _typewriterReveal(html) {
+  _addThinkingMessage() {
+    const msg = {
+      id: this._uid(),
+      role: "agent",
+      content: "",
+      timestamp: this._now(),
+      isAgent: true,
+      isUser: false,
+      isRecords: false,
+      isChart: false,
+      isCreatedRecord: false,
+      isThinking: true,
+      hasThinkingContent: false,
+      thinkingText: this.thinkingText,
+      thinkingShimmerClass: "thinking-shimmer",
+      rowClass: "message-row agent-msg"
+    };
+    this.messages = [...this.messages, msg];
+    this._scrollToBottom();
+    return msg.id;
+  }
+
+  _updateThinkingMessage(messageId, { content, showShimmer = false, finalize = false } = {}) {
+    if (!messageId) return;
+    const nextContent = content ?? "";
+    this.messages = this.messages.map((msg) => {
+      if (msg.id !== messageId) return msg;
+      return {
+        ...msg,
+        content: nextContent,
+        isThinking: !finalize,
+        hasThinkingContent: nextContent.trim().length > 0,
+        thinkingText: this.thinkingText,
+        thinkingShimmerClass: showShimmer
+          ? "thinking-shimmer"
+          : "thinking-shimmer thinking-shimmer-hidden"
+      };
+    });
+    this._scrollToBottom();
+  }
+
+  _finalizeThinkingMessage(messageId) {
+    return new Promise((resolve) => {
+      // eslint-disable-next-line @lwc/lwc/no-async-operation
+      const timerId = setTimeout(() => {
+        this._updateThinkingMessage(messageId, {
+          content: this.messages.find((msg) => msg.id === messageId)?.content ?? "",
+          showShimmer: false,
+          finalize: true
+        });
+        resolve();
+      }, THINKING_TRANSITION_DELAY);
+      this._typewriterTimerIds.push(timerId);
+    });
+  }
+
+  async _renderThinkingResponse(messageId, html) {
+    this._clearTypewriterTimers();
+    this._updateThinkingMessage(messageId, { content: html, showShimmer: false });
+    await this._finalizeThinkingMessage(messageId);
+  }
+
+  async _typewriterReveal(messageId, html) {
     this._clearTypewriterTimers();
 
     const blocks = this._parseHtmlBlocks(html);
     if (blocks.length <= 1) {
-      this.messages = [...this.messages, this._makeMsg("agent", html)];
-      return Promise.resolve();
+      await this._renderThinkingResponse(messageId, html);
+      return;
     }
 
-    const msgId = this._uid();
-    const timestamp = this._now();
     let revealed = `<span class="typewriter-block">${blocks[0]}</span>`;
+    this._updateThinkingMessage(messageId, { content: revealed, showShimmer: false });
 
-    this.messages = [
-      ...this.messages,
-      {
-        id: msgId,
-        role: "agent",
-        content: revealed,
-        timestamp,
-        isAgent: true,
-        isUser: false,
-        isRecords: false,
-        isChart: false,
-        isCreatedRecord: false,
-        rowClass: "message-row agent-msg"
-      }
-    ];
-    this._scrollToBottom();
-
-    if (blocks.length === 1) return Promise.resolve();
+    if (blocks.length === 1) {
+      await this._finalizeThinkingMessage(messageId);
+      return;
+    }
 
     return new Promise((resolve) => {
       for (let idx = 1; idx < blocks.length; idx++) {
         // eslint-disable-next-line @lwc/lwc/no-async-operation
         const timerId = setTimeout(() => {
           revealed += `<span class="typewriter-block">${blocks[idx]}</span>`;
-          this.messages = this.messages.map((m) =>
-            m.id === msgId ? { ...m, content: revealed } : m
-          );
-          this._scrollToBottom();
+          this._updateThinkingMessage(messageId, { content: revealed, showShimmer: false });
 
           if (idx === blocks.length - 1) {
-            resolve();
+            this._finalizeThinkingMessage(messageId).then(resolve);
           }
         }, idx * TYPEWRITER_BLOCK_DELAY);
         this._typewriterTimerIds.push(timerId);

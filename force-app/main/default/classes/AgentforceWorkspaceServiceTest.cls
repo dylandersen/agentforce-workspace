@@ -744,6 +744,22 @@ public class AgentforceWorkspaceServiceTest {
         System.assert(prompt.contains('Break it down by stage'));
     }
 
+    @isTest
+    static void testBuildNLtoSOQLPrompt_IncludesStaleAccountPattern() {
+        String prompt = AgentforceWorkspaceAnalysisService.buildNLtoSOQLPrompt(
+            'Accounts with open opps but no recent activities',
+            null,
+            UserInfo.getUserId(),
+            'Dylan',
+            'Schema context'
+        );
+
+        System.assert(prompt.contains('STALE ACCOUNT / NO RECENT ACTIVITY PATTERN'));
+        System.assert(prompt.contains('LastActivityDate'));
+        System.assert(prompt.contains('two semi-join sub-selects'));
+        System.assert(prompt.contains('Accounts with open opps but no recent activities'));
+    }
+
     // ═══════════════════════════════════════════════
     //  AnalysisService — buildAnalysisPromptFromData
     // ═══════════════════════════════════════════════
@@ -763,8 +779,14 @@ public class AgentforceWorkspaceServiceTest {
             data, 'Show accounts', null
         );
         System.assert(prompt.contains('Dylan'));
+        System.assert(prompt.contains('Address the user by first name only'));
+        System.assert(prompt.contains('USER IDENTITY GUARDRAILS'));
+        System.assert(prompt.contains('"Dylan Andersen"'));
+        System.assert(prompt.contains('logged-in Salesforce user'));
         System.assert(prompt.contains('RECORD LINK TABLE'));
         System.assert(prompt.contains('Key Findings'));
+        System.assert(prompt.contains('line|funnel|metricStrip'));
+        System.assert(prompt.contains('Pick the SINGLE best default visualization'));
     }
 
     @isTest
@@ -781,6 +803,55 @@ public class AgentforceWorkspaceServiceTest {
         );
         System.assert(prompt.contains('no matching data was found'));
         System.assert(prompt.contains('CONVERSATION SO FAR'));
+    }
+
+    @isTest
+    static void testEnforceRunningUserIdentity_RewritesWrongDirectAddress() {
+        String raw = '<h1>Your Most Recent Open Deal</h1><p>Michael, your most recent open opportunity is PFPA - Silo OSINT Expansion 500 Seats.</p>';
+
+        String sanitized = AgentforceWorkspaceAnalysisService.enforceRunningUserIdentity(
+            raw, 'Dylan', 'Dylan Andersen'
+        );
+
+        System.assertNotEquals(raw, sanitized);
+        System.assertEquals(-1, sanitized.indexOf('Michael, your most recent open opportunity'));
+        System.assert(sanitized.contains('Dylan, your most recent open opportunity'));
+    }
+
+    @isTest
+    static void testEnforceRunningUserIdentity_PreservesCorrectName() {
+        String raw = '<p>Hi Dylan, here is your pipeline.</p>';
+
+        String sanitized = AgentforceWorkspaceAnalysisService.enforceRunningUserIdentity(
+            raw, 'Dylan', 'Dylan Andersen'
+        );
+
+        System.assertEquals(raw, sanitized);
+    }
+
+    @isTest
+    static void testEnforceRunningUserIdentity_RewritesFullNameToFirstName() {
+        String raw = '<p>Dylan Andersen, your most recent open opportunity is PFPA - Silo OSINT Expansion 500 Seats.</p>';
+
+        String sanitized = AgentforceWorkspaceAnalysisService.enforceRunningUserIdentity(
+            raw, 'Dylan', 'Dylan Andersen'
+        );
+
+        System.assertNotEquals(raw, sanitized);
+        System.assertEquals(-1, sanitized.indexOf('Dylan Andersen, your most recent open opportunity'));
+        System.assert(sanitized.contains('Dylan, your most recent open opportunity'));
+    }
+
+    @isTest
+    static void testEnforceRunningUserIdentity_NormalizesAwkwardFollowUpQuestion() {
+        String raw = '<p><b>Dylan, or show you other open opportunities with PFPA?</b></p>';
+
+        String sanitized = AgentforceWorkspaceAnalysisService.enforceRunningUserIdentity(
+            raw, 'Dylan', 'Dylan Andersen'
+        );
+
+        System.assertEquals(-1, sanitized.indexOf('Dylan, or show you'));
+        System.assert(sanitized.contains('Would you like me to show you other open opportunities with PFPA?'));
     }
 
     // ═══════════════════════════════════════════════
@@ -812,6 +883,18 @@ public class AgentforceWorkspaceServiceTest {
         System.assertNotEquals(null, result.chartData);
         System.assertEquals('bar', result.chartData.chartType);
         System.assertEquals(1, result.chartData.items.size());
+    }
+
+    @isTest
+    static void testParseSuggestions_NormalizesExpandedChartTypes() {
+        String raw = '<p>Trend</p>'
+            + '<CHART>{"chartType":"lineChart","title":"Momentum","valueLabel":"Amount","items":[{"label":"Jan","value":10},{"label":"Feb","value":15},{"label":"Mar","value":20}]}</CHART>'
+            + '<SUGGESTIONS>["Drill in?"]</SUGGESTIONS>';
+
+        AgentforceWorkspaceModels.ChatResult result = AgentforceWorkspaceAnalysisService.parseSuggestions(raw);
+        System.assertNotEquals(null, result.chartData);
+        System.assertEquals('line', result.chartData.chartType);
+        System.assertEquals(3, result.chartData.items.size());
     }
 
     @isTest

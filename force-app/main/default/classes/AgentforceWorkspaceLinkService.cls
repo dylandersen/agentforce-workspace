@@ -25,18 +25,17 @@ public with sharing class AgentforceWorkspaceLinkService {
             for (SObject record : exec.results) {
                 String objType = String.valueOf(record.getSObjectType());
 
-                // For LIST_VIEW_OBJECTS: add primary link + traverse relationship fields
-                if (AgentforceWorkspaceQueryService.LIST_VIEW_OBJECTS.contains(objType)) {
+                // Add primary link + traverse relationship fields for any accessible object
+                if (AgentforceWorkspaceSchemaService.isAccessible(objType)) {
                     addLink(links, record, objType);
 
-                    // Harvest names from relationship fields (e.g., Account.Name on Opportunity)
                     Map<String, Object> fields = record.getPopulatedFieldsAsMap();
                     for (String fieldName : fields.keySet()) {
                         Object val = fields.get(fieldName);
                         if (val instanceof SObject) {
                             SObject rel = (SObject) val;
                             String relType = String.valueOf(rel.getSObjectType());
-                            if (AgentforceWorkspaceQueryService.LIST_VIEW_OBJECTS.contains(relType)) {
+                            if (AgentforceWorkspaceSchemaService.isAccessible(relType)) {
                                 addLink(links, rel, relType);
                             }
                         }
@@ -123,9 +122,7 @@ public with sharing class AgentforceWorkspaceLinkService {
 
     private static void addLink(Map<String, List<String>> links, SObject record, String objType) {
         Map<String, Object> fields = record.getPopulatedFieldsAsMap();
-        // Use the configured name field for the object type, falling back to 'Name'
-        String nameField = AgentforceWorkspaceQueryService.OBJECT_NAME_FIELDS.containsKey(objType)
-            ? AgentforceWorkspaceQueryService.OBJECT_NAME_FIELDS.get(objType) : 'Name';
+        String nameField = AgentforceWorkspaceSchemaService.getNameField(objType);
         String name = (String) fields.get(nameField);
         if (String.isBlank(name)) name = (String) fields.get('Name');
         String recordId = record.Id;

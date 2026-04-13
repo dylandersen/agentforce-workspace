@@ -116,6 +116,15 @@ public with sharing class AgentforceWorkspaceReasoningEngine {
         return result;
     }
 
+    /**
+     * Lightweight public wrapper used by the LWC to surface plan text
+     * before the full query-building round trip completes.
+     */
+    public static AgentforceWorkspaceModels.IntentResult previewIntent(
+            String userMessage, String conversationHistory) {
+        return classifyIntent(userMessage, conversationHistory);
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  INTENT CLASSIFICATION (Pass 0)
     // ═══════════════════════════════════════════════════════════════

@@ -20,6 +20,7 @@
   --chat-input-bg: #f8f8f8;
   --chat-radius: 0.75rem;
   --chat-radius-sm: 0.5rem;
+  --chat-agent-avatar-size: 2rem;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -358,25 +359,31 @@
 /* ─── Landing Input Box ──────────────────────────── */
 
 .landing-input-box {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
   background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  border: 1.5px solid rgba(23, 176, 164, 0.28);
   border-radius: 0.75rem;
   padding: 0;
   box-shadow:
     0 2px 12px rgba(0, 0, 0, 0.06),
-    0 0 0 1px rgba(0, 0, 0, 0.03);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    0 0 0 4px rgba(30, 200, 186, 0.07),
+    0 0 16px rgba(30, 200, 186, 0.1);
+  animation: landingBoxGlow 4s ease-in-out infinite;
+  transition: border-color 0.2s ease, transform 0.2s ease;
   margin-bottom: 2.5rem;
 }
 
 .landing-input-box:focus-within {
-  border-color: rgba(23, 176, 164, 0.4);
+  border-color: rgba(23, 176, 164, 0.55);
+  transform: translateY(-1px);
   box-shadow:
-    0 2px 12px rgba(0, 0, 0, 0.06),
-    0 0 0 3px rgba(30, 200, 186, 0.12);
+    0 6px 20px rgba(0, 0, 0, 0.08),
+    0 0 0 4px rgba(30, 200, 186, 0.13),
+    0 0 24px rgba(30, 200, 186, 0.22);
+  animation: none;
 }
 
 .landing-input-area {
@@ -409,6 +416,23 @@
   align-items: center;
   justify-content: space-between;
   padding: 0.625rem 0.75rem;
+}
+
+@keyframes landingBoxGlow {
+  0%, 100% {
+    box-shadow:
+      0 2px 12px rgba(0, 0, 0, 0.06),
+      0 0 0 4px rgba(30, 200, 186, 0.07),
+      0 0 16px rgba(30, 200, 186, 0.1);
+    border-color: rgba(23, 176, 164, 0.22);
+  }
+  50% {
+    box-shadow:
+      0 2px 12px rgba(0, 0, 0, 0.06),
+      0 0 0 5px rgba(30, 200, 186, 0.14),
+      0 0 28px rgba(30, 200, 186, 0.2);
+    border-color: rgba(23, 176, 164, 0.48);
+  }
 }
 
 .landing-controls-left {
@@ -457,6 +481,23 @@
   background: rgba(23, 176, 164, 0.08);
   border-color: rgba(23, 176, 164, 0.3);
   color: #17B0A4;
+}
+
+.landing-model-btn .model-btn-logo {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  object-fit: contain;
+  border-radius: 2px;
+}
+
+.landing-model-btn .model-btn-logo-openai {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.landing-model-btn .model-btn-logo-nvidia {
+  border-radius: 50%;
 }
 
 .chevron-icon {
@@ -654,6 +695,13 @@
 }
 .task-icon-create .task-card-slds-icon {
   --slds-c-icon-color-foreground-default: #17B0A4;
+}
+
+.task-icon-custom {
+  background: rgba(139, 92, 246, 0.1);
+}
+.task-icon-custom .task-card-slds-icon {
+  --slds-c-icon-color-foreground-default: #8B5CF6;
 }
 
 .task-card-slds-icon {
@@ -1043,8 +1091,8 @@
 }
 
 .agent-avatar {
-  width: 2rem;
-  height: 2rem;
+  width: var(--chat-agent-avatar-size);
+  height: var(--chat-agent-avatar-size);
   border-radius: 50%;
   background: var(--chat-surface-raised);
   border: 1px solid var(--chat-border);
@@ -1228,37 +1276,83 @@
   box-shadow: 0 2px 8px rgba(23, 176, 164, 0.25);
 }
 
-/* ─── Typing Indicator (Bouncing Dots) ───────────── */
+/* ─── Thinking Shimmer ────────────────────────────── */
 
-.typing-row {
-  animation: msgSlideIn 0.3s ease-out;
+.thinking-indicator-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
 }
 
-.typing-indicator {
-  display: flex;
-  align-items: center;
-  gap: 5px;
+.thinking-shimmer {
+  min-height: var(--chat-agent-avatar-size);
   padding: 0.75rem 1rem;
+  box-sizing: border-box;
   background: var(--chat-agent-bubble);
   border: 1px solid var(--chat-border);
   border-radius: 2px var(--chat-radius-sm) var(--chat-radius-sm) var(--chat-radius-sm);
+  display: flex;
+  align-items: center;
+  transition: opacity 0.16s ease, transform 0.16s ease;
 }
 
-.typing-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--chat-text-dim);
-  animation: bounceDot 1.4s ease-in-out infinite;
+.thinking-shimmer-text {
+  display: inline-block;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 0;
+  background: linear-gradient(
+    90deg,
+    #585654 0%,
+    #585654 30%,
+    #a8a6a3 42%,
+    #d0cecc 50%,
+    #a8a6a3 58%,
+    #585654 70%,
+    #585654 100%
+  );
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: thinkingTextShimmerLtr 1.8s ease-in-out infinite;
 }
 
-.typing-dot:nth-child(1) { animation-delay: 0s; }
-.typing-dot:nth-child(2) { animation-delay: 0.2s; }
-.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+.thinking-shimmer-hidden {
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+}
 
-@keyframes bounceDot {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
-  30%           { transform: translateY(-6px); opacity: 1; }
+.thinking-response {
+  animation: thinkingResponseFadeIn 0.18s ease-out;
+}
+
+@keyframes thinkingTextShimmerLtr {
+  0% {
+    background-position: 100% center;
+  }
+  85% {
+    background-position: 0% center;
+  }
+  100% {
+    background-position: 0% center;
+  }
+}
+
+@keyframes thinkingResponseFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ─── Typewriter Effect ──────────────────────────── */

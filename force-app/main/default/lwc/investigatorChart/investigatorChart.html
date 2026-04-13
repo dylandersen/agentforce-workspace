@@ -8,7 +8,7 @@
           <h3 class="chart-title">{chartData.title}</h3>
         </div>
         <div class="chart-header-actions">
-          <button class="chart-action-btn" onclick={handleCycleType} title="Switch chart type">
+          <button class="chart-action-btn" onclick={handleCycleType} title={cycleTitle} disabled={cycleDisabled}>
             <svg viewBox="0 0 16 16" fill="none" class="chart-action-icon" aria-hidden="true">
               <path d="M1.5 8a6.5 6.5 0 0111.48-4.16M14.5 8a6.5 6.5 0 01-11.48 4.16" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
               <path d="M13.5 1v3h-3M2.5 15v-3h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -24,6 +24,10 @@
           </template>
         </div>
       </div>
+
+      <template lwc:if={hasMultipleChartTypes}>
+        <p class="chart-type-chip">Showing {chartTypeLabel}</p>
+      </template>
 
       <!-- Bar Chart -->
       <template lwc:if={isBarChart}>
@@ -99,6 +103,89 @@
               </div>
             </template>
           </div>
+        </div>
+      </template>
+
+      <!-- Line Chart -->
+      <template lwc:if={isLineChart}>
+        <div class="line-chart">
+          <div class="bar-y-axis">
+            <template for:each={yAxisLabels} for:item="label">
+              <div key={label.key} class="bar-y-line" style={label.style}>
+                <span class="bar-y-label">{label.text}</span>
+              </div>
+            </template>
+          </div>
+          <div class="line-area">
+            <div class="line-grid">
+              <template for:each={yAxisLabels} for:item="label">
+                <div key={label.key} class="line-grid-row" style={label.style}></div>
+              </template>
+            </div>
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="line-svg" aria-hidden="true">
+              <polygon points={lineAreaPoints} class="line-area-fill"></polygon>
+              <polyline points={linePoints} class="line-path"></polyline>
+            </svg>
+            <template for:each={linePointNodes} for:item="point">
+              <div key={point.key} class="line-point-node" style={point.style}>
+                <span class="line-point-dot" style={point.swatchStyle}></span>
+                <div class="line-tooltip-wrap">
+                  <span class="bar-tooltip-value">{point.formattedValue}</span>
+                  <span class="bar-tooltip-label">{point.label}</span>
+                </div>
+              </div>
+            </template>
+            <div class="line-x-axis">
+              <template for:each={processedItems} for:item="item">
+                <span key={item.key} class="line-x-label" title={item.label}>{item.shortLabel}</span>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Funnel Chart -->
+      <template lwc:if={isFunnelChart}>
+        <div class="funnel-chart">
+          <div class="funnel-visual-wrap">
+            <svg viewBox="0 0 100 100" class="funnel-svg" aria-hidden="true">
+              <template for:each={funnelSegments} for:item="segment">
+                <g key={segment.key}>
+                  <polygon points={segment.points} fill={segment.fill} class="funnel-segment-shape"></polygon>
+                  <text x="50" y={segment.valueY} text-anchor="middle" class="funnel-segment-value">{segment.formattedValue}</text>
+                  <text x="50" y={segment.labelY} text-anchor="middle" class="funnel-segment-label">{segment.shortLabelH}</text>
+                </g>
+              </template>
+            </svg>
+          </div>
+          <div class="funnel-details">
+            <template for:each={funnelItems} for:item="item">
+              <div key={item.key} class="funnel-detail-row">
+                <div class="funnel-detail-main">
+                  <span class="funnel-detail-label">{item.label}</span>
+                  <span class="funnel-detail-note">{item.fromPreviousLabel}</span>
+                </div>
+                <span class="funnel-detail-value">{item.formattedValue}</span>
+                <span class="funnel-detail-share">{item.fromStartLabel}</span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- Metric Strip -->
+      <template lwc:if={isMetricStrip}>
+        <div class="metric-strip">
+          <template for:each={processedItems} for:item="item">
+            <div key={item.key} class="metric-card">
+              <span class="metric-card-accent" style={item.metricAccentStyle}></span>
+              <span class="metric-label">{item.label}</span>
+              <span class="metric-value">{item.formattedValue}</span>
+              <template lwc:if={showMetricShare}>
+                <span class="metric-meta">{item.pctLabel} of total</span>
+              </template>
+            </div>
+          </template>
         </div>
       </template>
     </div>
