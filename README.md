@@ -4,6 +4,8 @@ Agentforce Workspace is a production-oriented conversational analytics surface f
 
 This project is not a chat wrapper around SOQL. It is an attempt to build a serious reasoning interface for CRM and service operations: schema-aware, user-context-aware, resilient under ambiguity, and disciplined about how AI is allowed to interact with enterprise data.
 
+While Agentforce Workspace is technically a proof-of-concept, there are many components that might be new or re-envisioned design patterns here. The goal of this is to spark ideas, conversation, and find a way to serve users in LEX with an incredible AI-first, multimodal experience.
+
 ![Salesforce API v65.0](https://img.shields.io/badge/Salesforce%20API-v65.0-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green)
 
@@ -141,6 +143,8 @@ The landing page task suggestions grid is now org-aware. On load, `getOrgSchemaC
 
 A new Usage Estimate section in the sidebar tracks cumulative Flex Credit consumption per session. The component estimates token counts from message content and maps model IDs to their credit tier (`basic`, `standard`, `advanced`) to produce a per-request and cumulative credit estimate. This is a client-side estimate, not a billing-accurate figure, but it gives users and admins a useful signal about relative cost across model choices.
 
+This component was built, designed, and assembled by the inimitable [@Hunter Reh](https://github.com/hrehcodes/) and was first used in his fantastic [Agentforce Record Insights](https://github.com/hrehcodes/models-api-lwc-solution-pattern) design pattern.
+
 ### Updated Model Roster
 
 The workspace now reflects the current Salesforce Models API model IDs:
@@ -257,6 +261,10 @@ Intent classification
   -> attach schema context (dynamic, from org metadata)
   -> attach only high-value examples
   -> generate more precise output
+
+Future model
+------------
+Much better (hopefully)
 ```
 
 ### Dynamic Error Diagnosis
@@ -432,5 +440,10 @@ It demonstrates that advanced conversational software on Salesforce does not nee
 ---
 
 ## License
+
+This project was first designed, created, and built by Dylan Andersen - a Senior Solution Engineer at Salesforce, working with Agentforce + Data 360.
+Countless people have influenced this project and played a huge role but special thanks to Sreeram Nambiar, Hunter Reh, Eddie Broadhead, Brendan Sheridan, Scott Hendrix, and countless others for the inspiration and support.
+
+No support is provided. Please email dylan.andersen@salesforce.com or create a PR with feedback.
 
 MIT. See [LICENSE](LICENSE) for details.
