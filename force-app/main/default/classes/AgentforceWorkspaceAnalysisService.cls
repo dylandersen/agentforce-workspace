@@ -85,7 +85,10 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('1. For data questions, generate ONLY SELECT queries. Never generate INSERT, UPDATE, DELETE, or UPSERT as SOQL.\n');
         parts.add('2. Every query MUST include a LIMIT clause. Maximum LIMIT is 200.\n');
         parts.add('3. Only query objects from the schema provided below.\n');
-        parts.add('4. Use the running user\'s ID for "my" queries (e.g., WHERE OwnerId = \'' + userId + '\').\n');
+        parts.add('4. OWNERSHIP FILTER (MANDATORY):\n');
+        parts.add('   - If the user says "my", "mine", "I own", "I\'m working on", "assigned to me", or any possessive/first-person reference → you MUST add WHERE OwnerId = \'' + userId + '\'. This is NOT optional.\n');
+        parts.add('   - If the user does NOT use any possessive/first-person language → do NOT add OwnerId filter. The query runs with the user\'s sharing rules so they only see records they have access to.\n');
+        parts.add('   - Examples: "my pipeline" → OwnerId = \'' + userId + '\'. "pipeline by stage" → no OwnerId. "accounts I own" → OwnerId. "accounts with no activity" → no OwnerId. "show me my cases" → OwnerId. "open cases" → no OwnerId.\n');
         parts.add('5. Today\'s date is ' + Date.today().format() + '. Use this for relative date calculations.\n');
         parts.add('6. For date ranges, prefer Salesforce date literals: TODAY, YESTERDAY, THIS_WEEK, LAST_WEEK, THIS_MONTH, LAST_MONTH, THIS_QUARTER, LAST_QUARTER, THIS_YEAR, LAST_YEAR, NEXT_N_DAYS:n, LAST_N_DAYS:n, NEXT_N_MONTHS:n, LAST_N_MONTHS:n.\n');
         parts.add('7. Use aggregate functions (COUNT, SUM, AVG, MIN, MAX) with GROUP BY when the question asks for totals, averages, or grouped data.\n');
@@ -110,6 +113,7 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('    WRONG:   SELECT ... FROM Contact WHERE Account.Name = \'Pacific Distribution Centers\' LIMIT 200\n');
         parts.add('    This pattern applies to ALL objects with AccountId: Task, Event, Contact, Opportunity, Case, etc. For objects without AccountId, use LIKE on the relationship: e.g., Account.Name LIKE \'%keyword%\'.\n');
         parts.add('14. ALWAYS PAIR detail queries with aggregate counts: for EVERY detail SELECT, also generate a matching COUNT() query with the same WHERE clause. Put the COUNT query FIRST. For grouped aggregates, a separate COUNT is not needed.\n');
+        parts.add('14b. FOLLOW-UP CONSISTENCY — When the conversation history contains "[SYSTEM: Last shown X records (N of M total):" lines AND the user asks to "list them", "show me their names", "list all N", "what are their names", or any similar request referencing those SAME records, you MUST reproduce the EXACT same WHERE clause from the original query. Do NOT rephrase, simplify, or regenerate the WHERE logic from scratch — that causes count drift between turns. If the original SOQL is visible in the conversation history (from a previous ASSISTANT turn), reuse it verbatim. If you only have the record IDs from the context block, query by those IDs directly: SELECT Id, Name, ... FROM X WHERE Id IN (\'id1\',\'id2\',...) LIMIT 200.\n');
     }
 
     // ─── Create/Update Rules (15-23) — CREATE, UPDATE, FOLLOWUP ─
@@ -133,7 +137,13 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('22. PENDING RECORD UPDATE — When the conversation history contains a line "[SYSTEM: Pending record update — Object: X, Record ID: xxx, Record Name: Y, Available blank fields: F1, F2, ...]" and the user\'s current message provides values for one or more of those fields, output: {"action":"update_execute","recordId":"xxx","objectApiName":"X","fields":{"FieldApiName":"value"}}. Use only field API names (e.g. Phone, Website, Amount). Include ONLY the fields the user actually mentioned. If the user declines (says "no", "skip", "looks good", "that\'s fine", "not now", or otherwise passes), output: {"action":"update_cancel"}.\n');
         parts.add('22b. PENDING BULK UPDATE — When the conversation history contains a line "[SYSTEM: Pending bulk update — Object: X, Count: N, Record IDs: id1,id2, Fields: F1=v1;F2=v2]" and the user confirms with "yes", "confirm", "go ahead", "apply it", or similar, output {"action":"update_execute","objectApiName":"X","recordIds":["id1","id2"],"fields":{"F1":"v1","F2":"v2"}}.\n');
         parts.add('22c. If the user declines a pending bulk update with "no", "cancel", "skip", "don\'t", or similar, output {"action":"update_cancel"}.\n');
-        parts.add('22d. Do not emit update_execute for more than 10 records. If the result set is larger, keep the response advisory.\n');
+        parts.add('22d. Do not emit update_execute for more than 9 records. If the result set is larger, emit a bulk_update_preview action instead (see 22e).\n');
+        parts.add('22e. CONTEXT-FIRST UPDATE RULE — When the conversation history contains "[SYSTEM: Last shown X records (N):" lines and the user refers to "those records", "those accounts", "them", "the ones with/without [field]", or any similar reference to previously shown data:\n');
+        parts.add('  (a) DO NOT run a new SOQL query. USE the record IDs listed in the [SYSTEM: Last shown...] context.\n');
+        parts.add('  (b) Apply the user\'s filter condition to those context records (field values are listed; treat empty, "N/A", "—", or blank values as empty).\n');
+        parts.add('  (c) If ≤9 records match: emit {"action":"update_execute","objectApiName":"...","recordIds":[...],"fields":{...}} directly.\n');
+        parts.add('  (d) If ≥10 records match: emit {"action":"bulk_update_preview","objectApiName":"...","recordIds":[...],"fields":{...}} so the user can confirm before changes are applied.\n');
+        parts.add('  (e) NEVER run a fresh query when context records are already available and the user refers to them.\n');
         parts.add('23. MULTIPLE RECORD CREATES IN ONE MESSAGE — When the user asks to create MORE THAN ONE record in a single message (e.g. "create an account called Acme AND a contact on it for Jane Smith"), output a multi-action JSON: {"actions":[{"action":"create_execute","objectApiName":"Account","fields":{...}},{"action":"create_execute","objectApiName":"Contact","fields":{"AccountId":"Acme",...}}]}. Rules: (a) Always order parent records first (Account before Contact/Case/Opportunity). (b) In the child record\'s reference field, put the PARENT\'S NAME (not ID) — the system creates the parent first and the name-to-ID lookup will find it automatically. (c) Use this format whenever the user mentions AND, ALSO, PLUS, or multiple objects being created. (d) If one of the creates needs more info, use "create" instead of "create_execute" for that step only.\n');
     }
 
@@ -155,6 +165,17 @@ public with sharing class AgentforceWorkspaceAnalysisService {
 
     private static void appendComplexQueryRules(List<String> parts, String userId) {
         parts.add('\n## COMPLEX QUERY PATTERNS\n');
+
+        parts.add('20a. ACCOUNT OVERVIEW / "WHAT\'S THE LATEST" PATTERN — When the user asks any of the following:\n');
+        parts.add('    "what\'s the latest with X", "what\'s going on with X", "how\'s X doing", "give me an update on X",\n');
+        parts.add('    "tell me about X account", "overview of X", "understand X account", "catch me up on X",\n');
+        parts.add('    or any similarly broad account-status inquiry — you MUST generate ALL FIVE of these query groups:\n');
+        parts.add('    (1) Account record: SELECT Id, Name, Industry, Type, Phone, AnnualRevenue, Owner.Name, LastActivityDate FROM Account WHERE Name LIKE \'%X%\' LIMIT 5\n');
+        parts.add('    (2) Open Cases (count + detail): SELECT COUNT() ... and SELECT Id, CaseNumber, Subject, Status, Priority, CreatedDate, Owner.Name FROM Case WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%X%\') AND IsClosed = false ORDER BY CreatedDate DESC LIMIT 10\n');
+        parts.add('    (3) Open Opportunities (count + detail): SELECT COUNT() ... and SELECT Id, Name, Amount, StageName, CloseDate, Owner.Name FROM Opportunity WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%X%\') AND IsClosed = false ORDER BY CloseDate ASC LIMIT 10\n');
+        parts.add('    (4) Recent Tasks/Activities: SELECT Id, Subject, Status, TaskSubtype, ActivityDate, Owner.Name FROM Task WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%X%\') ORDER BY ActivityDate DESC LIMIT 10\n');
+        parts.add('    (5) Key Contacts: SELECT Id, Name, Title, Email, Phone FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%X%\') ORDER BY LastModifiedDate DESC LIMIT 10\n');
+        parts.add('    CRITICAL: NEVER use Account.Name = \'...\' or Account.Name LIKE \'...\' directly in WHERE on Task, Event, Contact, Opportunity, or Case. ALWAYS use AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%X%\'). This is mandatory — direct relationship filters on those objects WILL FAIL.\n\n');
         parts.add('20. MEETINGS/EVENTS → ACCOUNTS → CASES PATTERN: When the question involves meetings/events AND their related Accounts or Cases, you MUST generate separate Account and Case queries using SOQL subquery joins via Event.WhatId. SOQL supports this pattern:\n');
         parts.add('    - Accounts from meetings: SELECT Id, Name, Industry, Type, Phone FROM Account WHERE Id IN (SELECT WhatId FROM Event WHERE OwnerId = \'' + userId + '\' AND ActivityDate = THIS_WEEK) LIMIT 200\n');
         parts.add('    - Cases for meeting accounts: SELECT Id, CaseNumber, Subject, Status, Priority, AccountId FROM Case WHERE AccountId IN (SELECT WhatId FROM Event WHERE OwnerId = \'' + userId + '\' AND ActivityDate = THIS_WEEK) AND IsClosed = false ORDER BY CreatedDate DESC LIMIT 200\n');
@@ -182,7 +203,8 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('\n## RUNNING USER CONTEXT\n');
         parts.add('- User ID: ' + userId + '\n');
         parts.add('- User Name: ' + userName + '\n');
-        parts.add('- When the user says "my", "mine", or "I", filter by OwnerId = \'' + userId + '\'\n\n');
+        parts.add('- OWNERSHIP RULE: "my/mine/I" → OwnerId = \'' + userId + '\'. No possessive → no OwnerId filter.\n');
+        parts.add('- All queries execute with this user\'s sharing rules — they can only see records they have access to regardless.\n\n');
     }
 
     // ─── Few-Shot Examples (R6) ──────────────────────────────────
@@ -215,6 +237,19 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('User: "Accounts with open opps but no recent activities"\n');
         parts.add('Output: {"queries":[{"purpose":"Count of accounts with open opportunities but no recent activity","soql":"SELECT COUNT() FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE IsClosed = false) AND (LastActivityDate = NULL OR LastActivityDate < LAST_N_DAYS:30)"},{"purpose":"Accounts with open opportunities but no recent activity","soql":"SELECT Id, Name, Industry, Type, LastActivityDate FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE IsClosed = false) AND (LastActivityDate = NULL OR LastActivityDate < LAST_N_DAYS:30) ORDER BY LastActivityDate ASC NULLS FIRST LIMIT 200"}]}\n\n');
 
+        parts.add('Example 8 — Account overview / "what\'s the latest" (CRITICAL PATTERN — always use this for broad account inquiries):\n');
+        parts.add('User: "what\'s the latest with the city of irvine account"\n');
+        parts.add('Output: {"queries":[\n');
+        parts.add('  {"purpose":"Account details","soql":"SELECT Id, Name, Industry, Type, Phone, AnnualRevenue, Owner.Name, LastActivityDate FROM Account WHERE Name LIKE \'%City of Irvine%\' LIMIT 5"},\n');
+        parts.add('  {"purpose":"Count of open cases","soql":"SELECT COUNT() FROM Case WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%City of Irvine%\') AND IsClosed = false"},\n');
+        parts.add('  {"purpose":"Open cases","soql":"SELECT Id, CaseNumber, Subject, Status, Priority, CreatedDate, Owner.Name FROM Case WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%City of Irvine%\') AND IsClosed = false ORDER BY CreatedDate DESC LIMIT 10"},\n');
+        parts.add('  {"purpose":"Count of open opportunities","soql":"SELECT COUNT() FROM Opportunity WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%City of Irvine%\') AND IsClosed = false"},\n');
+        parts.add('  {"purpose":"Open opportunities","soql":"SELECT Id, Name, Amount, StageName, CloseDate, Owner.Name FROM Opportunity WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%City of Irvine%\') AND IsClosed = false ORDER BY CloseDate ASC LIMIT 10"},\n');
+        parts.add('  {"purpose":"Recent tasks","soql":"SELECT Id, Subject, Status, TaskSubtype, ActivityDate, Owner.Name FROM Task WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%City of Irvine%\') ORDER BY ActivityDate DESC LIMIT 10"},\n');
+        parts.add('  {"purpose":"Key contacts","soql":"SELECT Id, Name, Title, Email, Phone FROM Contact WHERE AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%City of Irvine%\') ORDER BY LastModifiedDate DESC LIMIT 10"}\n');
+        parts.add(']}\n');
+        parts.add('NOTE: This is the MANDATORY pattern for ALL account overview queries. NEVER use Account.Name directly in WHERE on Task/Case/Opportunity/Contact — always use AccountId IN (SELECT Id FROM Account WHERE Name LIKE \'%keyword%\').\n\n');
+
         if (shouldIncludeCreateRules(intentType)) {
             parts.add('Example 7 — Log a call (create action):\n');
             parts.add('User: "Log a call with Sarah about the renewal"\n');
@@ -242,6 +277,7 @@ public with sharing class AgentforceWorkspaceAnalysisService {
             parts.add('For declining a pending field update: {"action":"update_cancel"}\n');
             parts.add('For confirming a pending bulk update: {"action":"update_execute","objectApiName":"Opportunity","recordIds":["006...","006..."],"fields":{"CloseDate":"2026-12-31"}}\n');
             parts.add('For cancelling a pending bulk update: {"action":"update_cancel"}\n');
+            parts.add('For requesting confirmation before updating 10+ context records: {"action":"bulk_update_preview","objectApiName":"Account","recordIds":["001...","001..."],"fields":{"Industry":"Financial Services"}}\n');
             parts.add('For creating MULTIPLE records: {"actions":[{"action":"create_execute","objectApiName":"Account","fields":{"Name":"Company"}},{"action":"create_execute","objectApiName":"Contact","fields":{"FirstName":"Jane","LastName":"Smith","AccountId":"Company"}}]}\n');
         }
 
@@ -255,14 +291,22 @@ public with sharing class AgentforceWorkspaceAnalysisService {
                                                       String userMessage, String conversationHistory) {
         List<String> parts = new List<String>();
 
-        parts.add('You are a senior business analyst working inside a Salesforce CRM that is integrated with Salesforce Data 360 (Data Cloud). ');
-        parts.add('A Sales and Marketing professional named ' + data.userName + ' asked a business intelligence question. ');
-        parts.add('You have access to query results below from BOTH the Salesforce CRM and Salesforce Data 360. Provide a rich, insightful analysis.\n\n');
-        parts.add('**DATA SOURCES:**\n');
-        parts.add('- CRM data: standard Salesforce objects (Account, Opportunity, Contact, etc.)\n');
-        parts.add('- Data 360 data: labeled "DATA CLOUD — Credit Usage", sourced from the **Daily_Credit_Usage__dll** Data Lake Object (DLO) in Salesforce Data 360.\n');
-        parts.add('When both sources are present, synthesize them into a unified answer.\n');
-        parts.add('**DATA SOURCE ATTRIBUTION RULE:** Whenever you include Data 360 / Data Cloud data in your response, you MUST cite the source exactly once in a small note. Use this exact format as the last line before your CHART block: <p><em>Data 360 source: <code>Daily_Credit_Usage__dll</code> (Data Lake Object)</em></p>. Do not repeat this citation multiple times.\n\n');
+        Boolean hasDC = (data.hasDataCloudData != null && data.hasDataCloudData);
+
+        if (hasDC) {
+            parts.add('You are a senior business analyst working inside a Salesforce CRM that is integrated with Salesforce Data 360 (Data Cloud). ');
+            parts.add('A Sales and Marketing professional named ' + data.userName + ' asked a business intelligence question. ');
+            parts.add('You have access to query results below from BOTH the Salesforce CRM and Salesforce Data 360. Provide a rich, insightful analysis.\n\n');
+            parts.add('**DATA SOURCES:**\n');
+            parts.add('- CRM data: standard Salesforce objects (Account, Opportunity, Contact, etc.)\n');
+            parts.add('- Data 360 data: labeled "DATA CLOUD — Credit Usage", sourced from the **Daily_Credit_Usage__dll** Data Lake Object (DLO) in Salesforce Data 360.\n');
+            parts.add('When both sources are present, synthesize them into a unified answer.\n');
+            parts.add('**DATA SOURCE ATTRIBUTION RULE:** Whenever you include Data 360 / Data Cloud data in your response, you MUST cite the source exactly once in a small note. Use this exact format as the last line before your CHART block: <p><em>Data 360 source: <code>Daily_Credit_Usage__dll</code> (Data Lake Object)</em></p>. Do not repeat this citation multiple times.\n\n');
+        } else {
+            parts.add('You are a senior business analyst working inside a Salesforce CRM. ');
+            parts.add('A Sales and Marketing professional named ' + data.userName + ' asked a business intelligence question. ');
+            parts.add('Provide a rich, insightful analysis based on the CRM query results below.\n\n');
+        }
 
         parts.add('**Today\'s date:** ' + Datetime.now().format('MMMM d, yyyy') + '\n\n');
 
@@ -294,12 +338,21 @@ public with sharing class AgentforceWorkspaceAnalysisService {
         parts.add('- Write in plain business English. Sound like a smart coworker, not a database.\n');
         parts.add('- Focus on WHAT the data means and WHY it matters.\n\n');
         parts.add('**USER IDENTITY GUARDRAILS:**\n');
-        parts.add('- The logged-in Salesforce user for this conversation is exactly "' + data.userFullName + '" and their first name is exactly "' + data.userName + '".\n');
-        parts.add('- Query results may contain many other person names (contacts, deal owners, customers, executives). Those names are CRM data, not the logged-in user.\n');
-        parts.add('- NEVER greet, address, or refer to the logged-in user as any name other than "' + data.userName + '".\n');
-        parts.add('- NEVER output the logged-in user\'s full name "' + data.userFullName + '" in user-facing prose. If you need to address the user, use only "' + data.userName + '" or "you".\n');
+        parts.add('- The logged-in user\'s first name is "' + data.userName + '". Use ONLY this when addressing them.\n');
+        parts.add('- NEVER follow the user\'s first name with their last name or full name. "' + data.userName + ', ' + data.userFullName + '." is FORBIDDEN. Write "' + data.userName + '," only.\n');
+        parts.add('- NEVER output "' + data.userFullName + '" anywhere in the response body. Not in greetings, not in closings, not anywhere.\n');
+        parts.add('- Query results may contain many other person names (contacts, deal owners, customers, executives). Those are CRM data, not the logged-in user.\n');
         parts.add('- Unless you are drafting an email to a third party, prefer "you" over any person name in the opening sentence.\n');
-        parts.add('- If a result row mentions someone named Michael, Sarah, Robert, or any other person, do not treat that as the user. Even if the CRM data contains "' + data.userFullName + '", still present the user as "' + data.userName + '".\n\n');
+        parts.add('- If a result row mentions someone named Michael, Sarah, Robert, or any other person, do not treat that as the user. The user is "' + data.userName + '".\n\n');
+
+        parts.add('**CRITICAL — READ-ONLY ANALYST — NO FAKE DML:**\n');
+        parts.add('You are a READ-ONLY data analyst. You CANNOT update, create, or delete Salesforce records.\n');
+        parts.add('NEVER say "I have updated", "I successfully set", "I have changed", "I updated X records", or ANY phrasing that implies you performed a write operation.\n');
+        parts.add('If the user is asking you to update data and the query results show matching records, do NOT pretend you changed anything.\n');
+        parts.add('Instead, tell the user you can only analyze data from the query results, and that to actually update records they should ask you to make the change as an action (e.g. "set those accounts\' industry to Financial Services") — which triggers a proper update flow rather than this analysis pass.\n\n');
+
+        parts.add('**LISTING / ENUMERATION RULE:**\n');
+        parts.add('When the user explicitly asks to "list", "list all", "show me the names", "who are they", "enumerate", or similar — you MUST output every individual record name from the query results, not just a summary. Use a numbered <ol> list or an HTML <table> with each record as a row. Include the record name as a clickable link (if available in the RECORD LINK TABLE). If there are more than 25 records, list ALL of them — do not truncate or say "and X more". The user specifically asked for the full list.\n\n');
 
         parts.add('**ABSOLUTELY DO NOT INCLUDE:**\n');
         parts.add('- Salesforce record IDs (e.g., 005Hu00000...)\n');
@@ -425,12 +478,46 @@ public with sharing class AgentforceWorkspaceAnalysisService {
 
         String safeFirstName = userFirstName.trim();
         String safeFullName = String.isNotBlank(userFullName) ? userFullName.trim() : '';
-        String sanitized = rewriteTagDirectAddress(rawResponse, safeFirstName, safeFullName);
+
+        // Strip "[firstName], [fullName][punct]" → "[firstName]," before anything else,
+        // since the tag-rewriter considers "[firstName]," an already-valid address and skips it.
+        String sanitized = stripRedundantFullNameRepeat(rawResponse, safeFirstName, safeFullName);
+
+        sanitized = rewriteTagDirectAddress(sanitized, safeFirstName, safeFullName);
 
         // Handle non-HTML-leading responses just in case the model emits plain text first.
         sanitized = rewriteStartOfStringAddress(sanitized, safeFirstName, safeFullName);
         sanitized = normalizeAwkwardFollowUpQuestion(sanitized, safeFirstName, safeFullName);
         return sanitized;
+    }
+
+    /**
+     * Removes the redundant full-name repetition the model sometimes emits right after a valid
+     * first-name address: "Dylan, Dylan Andersen. I reviewed…" → "Dylan, I reviewed…"
+     * The pattern is "[firstName], [fullName][.,! ]" which the existing rewriter misses because
+     * "[firstName]," already looks like a correct address and is returned unchanged.
+     */
+    @TestVisible
+    private static String stripRedundantFullNameRepeat(String text, String userFirstName, String userFullName) {
+        if (String.isBlank(text) || String.isBlank(userFirstName) || String.isBlank(userFullName)) {
+            return text;
+        }
+        // Build variants: "Dylan, Dylan Andersen." / "Dylan, Dylan Andersen " / etc.
+        String base = userFirstName + ', ' + userFullName;
+        for (String trailer : new List<String>{'. ', '! ', ', ', '.\n', '!\n', '.'}) {
+            String pattern = base + trailer;
+            if (text.contains(pattern)) {
+                // Keep "[firstName]," and the trailer's meaningful punctuation (space/newline).
+                // Swap ". " → " " so the next sentence still starts correctly.
+                String replacement = userFirstName + ', ';
+                text = text.replace(pattern, replacement);
+            }
+        }
+        // Edge-case: pattern at very end of string with no trailing char
+        if (text.endsWith(base)) {
+            text = text.substring(0, text.length() - base.length()) + userFirstName + ',';
+        }
+        return text;
     }
 
     @TestVisible

@@ -60,11 +60,16 @@ public with sharing class AgentforceWorkspaceQueryService {
     /** Lookup Account info for a set of Opportunity IDs (single consolidated query). */
     public static Map<Id, Opportunity> lookupOppAccounts(Set<Id> oppIds) {
         if (oppIds.isEmpty()) return new Map<Id, Opportunity>();
-        return new Map<Id, Opportunity>(
-            [SELECT Id, AccountId, Account.Name FROM Opportunity
-             WHERE Id IN :oppIds AND AccountId != null
-             WITH USER_MODE]
-        );
+        try {
+            return new Map<Id, Opportunity>(
+                [SELECT Id, AccountId, Account.Name FROM Opportunity
+                 WHERE Id IN :oppIds AND AccountId != null
+                 WITH USER_MODE]
+            );
+        } catch (Exception e) {
+            System.debug(LoggingLevel.WARN, 'lookupOppAccounts failed: ' + e.getMessage());
+            return new Map<Id, Opportunity>();
+        }
     }
 
     /** Find which objects have individual (non-aggregate, non-count) records.

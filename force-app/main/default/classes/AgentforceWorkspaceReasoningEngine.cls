@@ -51,6 +51,7 @@ public with sharing class AgentforceWorkspaceReasoningEngine {
 
         // ── Reasoning Loop ──
         List<String> attemptErrors = new List<String>();
+        List<String> attemptLabels = new List<String>();
 
         for (Integer attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             result.attemptsUsed = attempt;
@@ -63,7 +64,11 @@ public with sharing class AgentforceWorkspaceReasoningEngine {
 
             // Check for API-level errors
             if (isAIErrorResponse(llmResponse)) {
+                String errLabel = 'Attempt ' + attempt + ': AI model returned an error — retrying...';
                 attemptErrors.add('Attempt ' + attempt + ': AI model returned an error response.');
+                if (attempt < MAX_ATTEMPTS) {
+                    attemptLabels.add(errLabel);
+                }
                 continue;
             }
 
@@ -72,6 +77,7 @@ public with sharing class AgentforceWorkspaceReasoningEngine {
             if (createAction != null) {
                 result.success = true;
                 result.createAction = createAction;
+                result.attemptLabels = attemptLabels;
                 return result;
             }
 
@@ -82,8 +88,11 @@ public with sharing class AgentforceWorkspaceReasoningEngine {
             if (plans.isEmpty()) {
                 String snippet = (llmResponse != null)
                     ? llmResponse.abbreviate(200) : 'null';
-                attemptErrors.add('Attempt ' + attempt
-                    + ': No valid SOQL parsed. Raw (truncated): ' + snippet);
+                String rawErr = 'Attempt ' + attempt + ': No valid SOQL parsed. Raw (truncated): ' + snippet;
+                attemptErrors.add(rawErr);
+                if (attempt < MAX_ATTEMPTS) {
+                    attemptLabels.add('Attempt ' + attempt + ': Could not parse query — retrying with different approach...');
+                }
                 continue;
             }
 
@@ -92,25 +101,34 @@ public with sharing class AgentforceWorkspaceReasoningEngine {
                 BusinessIntelligence.executeQueries(plans);
 
             Boolean anySuccess = false;
+            List<String> thisAttemptErrors = new List<String>();
             for (BusinessIntelligence.QueryExecution exec : executions) {
                 if (exec.error == null) {
                     anySuccess = true;
                 } else {
-                    attemptErrors.add('Attempt ' + attempt
-                        + ': ' + exec.error + ' | SOQL: ' + exec.soql);
+                    String rawErr = 'Attempt ' + attempt + ': ' + exec.error + ' | SOQL: ' + exec.soql;
+                    attemptErrors.add(rawErr);
+                    thisAttemptErrors.add(exec.error);
                 }
             }
 
             if (anySuccess) {
                 result.success = true;
                 result.executions = executions;
+                result.attemptLabels = attemptLabels;
                 return result;
             }
-            // All queries failed this attempt — loop continues
+
+            // All queries failed — build a clean label for the sidebar
+            if (attempt < MAX_ATTEMPTS) {
+                String cleanLabel = buildCleanAttemptLabel(attempt, thisAttemptErrors);
+                attemptLabels.add(cleanLabel);
+            }
         }
 
         // ── All attempts exhausted ──
         result.success = false;
+        result.attemptLabels = attemptLabels;
         result.failureExplanation = buildFailureExplanation(intent, attemptErrors);
         result.alternativeSuggestions = buildAlternativeSuggestions(intent);
         return result;
@@ -154,8 +172,9 @@ public with sharing class AgentforceWorkspaceReasoningEngine {
         p.add('UPDATE — update/change/modify an existing record\n');
         p.add('COMPARE — compare two or more accounts/deals/metrics side by side\n');
         p.add('COMPOSE — draft/write/summarize/compose text content\n');
-        p.add('CLARIFY — message is too vague to act on; specify what to ask the user\n');
+        p.add('CLARIFY — message is too vague to act on WITHOUT a named entity; specify what to ask the user\n');
         p.add('FOLLOWUP — user is confirming, declining, or continuing a previous action\n\n');
+        p.add('IMPORTANT: "what\'s the latest with X", "how\'s X doing", "tell me about X account", "give me an update on X", "what\'s going on with X", "catch me up on X", "overview of X account" → always classify as QUERY with plan "Retrieve a multi-object account overview for X covering cases, opportunities, tasks, and contacts". NEVER classify these as CLARIFY — the account name is the entity, which is enough to act on.\n\n');
 
         // Include recent conversation tail (keeps prompt cheap — last 3 turns max)
         if (String.isNotBlank(conversationHistory)) {
@@ -243,6 +262,12 @@ public with sharing class AgentforceWorkspaceReasoningEngine {
                 'go ahead', 'do it', 'confirm', 'not now'})) {
             result.intent = 'FOLLOWUP';
             result.plan = 'Continue from previous action';
+        } else if (matchesAny(lower, new List<String>{
+                'latest with', 'latest on', 'what\'s going on with', 'how\'s ',
+                'overview of', 'catch me up', 'update on', 'tell me about',
+                'understand the', 'understand this', 'what\'s new with'})) {
+            result.intent = 'QUERY';
+            result.plan = 'Retrieve a multi-object account overview covering cases, opportunities, tasks, and contacts';
         } else {
             result.intent = 'QUERY';
             result.plan = 'Query Salesforce data';
@@ -378,6 +403,51 @@ public with sharing class AgentforceWorkspaceReasoningEngine {
         p.add('Or for creates: {"action":"create_execute","objectApiName":"...","fields":{...}}\n');
 
         return String.join(p, '');
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  ATTEMPT LABEL BUILDER
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Converts raw SOQL execution errors for a single attempt into a clean,
+     * user-facing label suitable for display in the sidebar progress panel.
+     */
+    private static String buildCleanAttemptLabel(Integer attempt, List<String> execErrors) {
+        if (execErrors == null || execErrors.isEmpty()) {
+            return 'Attempt ' + attempt + ': Query failed — retrying...';
+        }
+        String combined = String.join(execErrors, ' ').toLowerCase();
+
+        if (combined.contains('no such column') || combined.contains('invalid field')
+                || combined.contains('field does not exist') || combined.contains('unknown field')) {
+            // Extract the field name if possible (inline (?i) flag for case-insensitive match)
+            String fieldHint = '';
+            try {
+                Pattern p = Pattern.compile('(?i)(?:no such column|unknown field)[:\\ \']+([\\w]+)');
+                Matcher m = p.matcher(combined);
+                if (m.find()) {
+                    fieldHint = ' (' + m.group(1) + ')';
+                }
+            } catch (Exception ex) {
+                // Regex failure is non-critical — continue without hint
+            }
+            return 'Attempt ' + attempt + ': Field not found' + fieldHint + ' — simplifying query...';
+        }
+        if (combined.contains('unexpected token') || combined.contains('invalid soql')
+                || combined.contains('malformed query')) {
+            return 'Attempt ' + attempt + ': Query syntax error — correcting...';
+        }
+        if (combined.contains('too many subqueries') || combined.contains('semi join')) {
+            return 'Attempt ' + attempt + ': Query too complex — restructuring...';
+        }
+        if (combined.contains('relationship') || combined.contains('not a valid relationship')) {
+            return 'Attempt ' + attempt + ': Invalid relationship — adjusting query...';
+        }
+        if (combined.contains('group by') || combined.contains('aggregate')) {
+            return 'Attempt ' + attempt + ': Aggregation error — refining grouping...';
+        }
+        return 'Attempt ' + attempt + ': Query error — retrying with refined approach...';
     }
 
     // ═══════════════════════════════════════════════════════════════

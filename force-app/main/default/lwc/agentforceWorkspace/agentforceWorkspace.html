@@ -34,8 +34,12 @@
             <div class="shimmer-dot shimmer-dot-4"></div>
           </div>
 
-          <!-- Headline -->
-          <h1 class="hero-headline">{heroHeadline}<br/><span class="hero-headline-sub">let's get some work done together</span></h1>
+          <!-- Headline: greeting line is synchronous (day) + async (name), subline is static -->
+          <h1 class="hero-headline">
+            <span class="hero-greeting">{heroHeadline}</span>
+            <br/>
+            <span class="hero-headline-sub">let's get some work done together</span>
+          </h1>
           <p class="hero-subtitle">
             Ask anything about your pipeline, accounts, campaigns, or activities - and let Agentforce handle the heavy lift.
           </p>
@@ -181,6 +185,34 @@
                               <div class="agent-bubble">
                                 <lightning-formatted-rich-text value={msg.content}></lightning-formatted-rich-text>
                               </div>
+                              <!-- Retry chip: shown only on error messages -->
+                              <template lwc:if={msg.isError}>
+                                <div class="error-actions-row">
+                                  <template lwc:if={msg.suggestedFallbackModelId}>
+                                    <button
+                                      class="retry-chip retry-chip-switch"
+                                      data-msg-id={msg.id}
+                                      onclick={handleRetry}
+                                      title="Switch model and retry">
+                                      <svg viewBox="0 0 24 24" fill="none" class="retry-chip-icon" aria-hidden="true">
+                                        <path d="M1 4v6h6M23 20v-6h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                        <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                      </svg>
+                                      Switch to {msg.suggestedFallbackLabel} &amp; retry
+                                    </button>
+                                  </template>
+                                  <button
+                                    class="retry-chip"
+                                    data-msg-id={msg.id}
+                                    onclick={handleRetry}
+                                    title="Retry this message">
+                                    <svg viewBox="0 0 24 24" fill="none" class="retry-chip-icon" aria-hidden="true">
+                                      <path d="M1 4v6h6M20.49 9A9 9 0 0 0 5.64 5.64L1 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                    Retry
+                                  </button>
+                                </div>
+                              </template>
                             </template>
                             <span class="msg-time">{msg.timestamp}</span>
                           </div>
@@ -197,6 +229,19 @@
                               <img src={userPhotoUrl} alt="" class="avatar-icon" />
                             </div>
                           </template>
+                        </div>
+                      </template>
+                      <template lwc:elseif={msg.isSeparator}>
+                        <div class="model-switch-separator" role="separator" aria-label="Model switched">
+                          <div class="model-switch-separator-line"></div>
+                          <div class="model-switch-separator-pill">
+                            <svg viewBox="0 0 16 16" fill="none" class="model-switch-separator-icon" aria-hidden="true">
+                              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.25"/>
+                              <path d="M5.5 8h5M8 5.5l2.5 2.5L8 10.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                            <span>Switched to {msg.content}</span>
+                          </div>
+                          <div class="model-switch-separator-line"></div>
                         </div>
                       </template>
                     </div>
@@ -491,14 +536,44 @@
       <div class="modal-container">
         <div class="modal-header">
           <span class="modal-title">Related Records</span>
-          <button class="details-action-btn" onclick={handleCloseRecordsModal} title="Close">
-            <svg viewBox="0 0 16 16" fill="none" class="details-action-icon">
-              <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-          </button>
+          <div class="details-header-actions">
+            <!-- Create Salesforce Report -->
+            <button
+              class="export-list-view-btn"
+              onclick={handleExportToListView}
+              title="Create Salesforce Report from current tab"
+              disabled={isExportLoading}
+            >
+              <template lwc:if={isExportLoading}>
+                <svg viewBox="0 0 16 16" fill="none" class="export-list-view-icon spinning">
+                  <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" stroke-dasharray="18 6" stroke-linecap="round"/>
+                </svg>
+                <span>Creating…</span>
+              </template>
+              <template lwc:else>
+                <lightning-icon icon-name="standard:report" size="xx-small" alternative-text="Salesforce report" class="export-list-view-icon"></lightning-icon>
+                <span>Create Salesforce Report</span>
+              </template>
+            </button>
+            <button class="details-action-btn" onclick={handleCloseRecordsModal} title="Close">
+              <svg viewBox="0 0 16 16" fill="none" class="details-action-icon">
+                <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </div>
         </div>
+        <template lwc:if={exportErrorMessage}>
+          <div class="export-error-banner">
+            <svg viewBox="0 0 16 16" fill="none" class="export-error-icon">
+              <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M8 5v3.5M8 10.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span>{exportErrorMessage}</span>
+            <button class="export-error-dismiss" onclick={handleDismissExportError} title="Dismiss">&times;</button>
+          </div>
+        </template>
         <div class="modal-body">
-          <c-investigator-record-list record-tabs={sidebarRecordTabs}></c-investigator-record-list>
+          <c-investigator-record-list record-tabs={sidebarRecordTabs} data-modal="true" initial-active-tab-object-api-name={_modalInitialTabApiName}></c-investigator-record-list>
         </div>
       </div>
     </template>
@@ -574,6 +649,21 @@
               </template>
             </div>
           </template>
+        </div>
+      </div>
+    </template>
+
+    <!-- ─── Confirm Reset / Home Dialog ─────────────────── -->
+    <template lwc:if={isConfirmResetOpen}>
+      <div class="confirm-backdrop" onclick={handleCancelReset}></div>
+      <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-label="Confirm clear chat">
+        <div class="confirm-dialog-icon-wrap">
+          <lightning-icon icon-name="utility:warning" size="small" class="confirm-dialog-icon"></lightning-icon>
+        </div>
+        <p class="confirm-dialog-msg">Start a new conversation? Your current session will be cleared.</p>
+        <div class="confirm-dialog-actions">
+          <button class="confirm-btn confirm-btn-cancel" onclick={handleCancelReset}>Keep chatting</button>
+          <button class="confirm-btn confirm-btn-confirm" onclick={handleConfirmReset}>Clear &amp; start fresh</button>
         </div>
       </div>
     </template>

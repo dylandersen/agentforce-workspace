@@ -143,6 +143,25 @@ public with sharing class AgentforceWorkspaceController {
     }
 
     /**
+     * Returns a map of core CRM object API names to whether the running user can read them.
+     * Used by the LWC to give a real permissions pre-check before running queries.
+     * Cached for the session because object-level permissions don't change mid-session.
+     */
+    @AuraEnabled(cacheable=true)
+    public static Map<String, Boolean> checkObjectPermissions() {
+        Map<String, Boolean> perms = new Map<String, Boolean>();
+        perms.put('Account',     Schema.sObjectType.Account.isAccessible());
+        perms.put('Opportunity', Schema.sObjectType.Opportunity.isAccessible());
+        perms.put('Contact',     Schema.sObjectType.Contact.isAccessible());
+        perms.put('Case',        Schema.sObjectType.Case.isAccessible());
+        perms.put('Lead',        Schema.sObjectType.Lead.isAccessible());
+        perms.put('Campaign',    Schema.sObjectType.Campaign.isAccessible());
+        perms.put('Task',        Schema.sObjectType.Task.isAccessible());
+        perms.put('Event',       Schema.sObjectType.Event.isAccessible());
+        return perms;
+    }
+
+    /**
      * Lightweight Pass 0 endpoint so the LWC can render the plan immediately
      * while the heavier query-building flow continues in parallel.
      */
@@ -187,11 +206,14 @@ public with sharing class AgentforceWorkspaceController {
                 AgentforceWorkspaceReasoningEngine.reason(
                     userMessage, conversationHistory, userId, userName, resolvedModel);
 
-            // Surface intent understanding for the frontend
+            // Surface intent understanding and attempt detail for the frontend
             if (reasoning.classifiedIntent != null) {
                 result.intentLabel = reasoning.classifiedIntent.plan;
             }
             result.reasoningAttempts = reasoning.attemptsUsed;
+            if (reasoning.attemptLabels != null && !reasoning.attemptLabels.isEmpty()) {
+                result.reasoningAttemptLabels = reasoning.attemptLabels;
+            }
 
             // ── Handle: Clarification needed ──
             if (!reasoning.success && reasoning.createAction == null
@@ -287,6 +309,7 @@ public with sharing class AgentforceWorkspaceController {
                 if (dcResult != null && dcResult.hasData) {
                     ed.queryResultsText += '\n\n' + dcResult.formattedResults;
                     ed.hasAnyResults = true;
+                    ed.hasDataCloudData = true;
                     queriedLabels.add('Data Cloud usage');
                     // Surface each DLO account as a dedicated Related Records tab (supports comparison)
                     if (dcResult.recordTabs != null && !dcResult.recordTabs.isEmpty()) {
@@ -310,19 +333,31 @@ public with sharing class AgentforceWorkspaceController {
             return result;
 
         } catch (Exception e) {
-            System.debug(LoggingLevel.ERROR, 'buildQueries error: ' + e.getMessage());
+            System.debug(LoggingLevel.ERROR, 'buildQueries error: ' + e.getTypeName() + ': ' + e.getMessage());
             System.debug(LoggingLevel.ERROR, 'Stack: ' + e.getStackTraceString());
             String errorDetail = e.getMessage();
             if (errorDetail != null && errorDetail.length() > 200) {
                 errorDetail = errorDetail.substring(0, 200);
             }
+            String summaryMsg;
             if (errorDetail != null && (errorDetail.containsIgnoreCase('Models API') || errorDetail.containsIgnoreCase('generation'))) {
-                result.querySummary = 'The AI service is temporarily unavailable. Please try again in a moment or switch to a different model.';
+                summaryMsg = 'The AI service is temporarily unavailable. Please try again in a moment or switch to a different model.';
             } else if (errorDetail != null && errorDetail.containsIgnoreCase('SOQL')) {
-                result.querySummary = 'I had trouble building a query for that question. Try rephrasing it more specifically.';
+                summaryMsg = 'I had trouble retrieving data for that question. The query may have been too broad — try being more specific (e.g. "show me opportunities for City of Irvine" instead of "understand the account").';
             } else {
-                result.querySummary = 'Something went wrong while processing your request. Please try rephrasing or try again.';
+                summaryMsg = 'Something went wrong while processing your request. Please try rephrasing or try again.';
             }
+            result.querySummary = summaryMsg;
+            // Return a failure explanation so the LWC renders a proper AI message rather than raw text
+            result.executionDataJson = JSON.serialize(new Map<String, Object>{
+                'isFailureExplanation' => true,
+                'html' => '<h2>Unable to retrieve data</h2><p>' + summaryMsg + '</p>',
+                'suggestions' => new List<String>{
+                    'Show open opportunities for City of Irvine',
+                    'List contacts at City of Irvine',
+                    'What cases are open for City of Irvine?'
+                }
+            });
             return result;
         }
     }
@@ -449,6 +484,7 @@ public with sharing class AgentforceWorkspaceController {
             data.userName = (String) edMap.get('userName');
             data.userFullName = edMap.containsKey('userFullName') ? (String) edMap.get('userFullName') : UserInfo.getName();
             data.hasAnyResults = edMap.containsKey('hasAnyResults') ? (Boolean) edMap.get('hasAnyResults') : false;
+            data.hasDataCloudData = edMap.containsKey('hasDataCloudData') ? (Boolean) edMap.get('hasDataCloudData') : false;
 
             // Deserialize record links
             data.recordLinks = new Map<String, List<String>>();
@@ -575,6 +611,8 @@ public with sharing class AgentforceWorkspaceController {
             return createAction.containsKey('recordIds')
                 ? AgentforceWorkspaceRecordCreator.handleBulkUpdateExecute(createAction, userName)
                 : AgentforceWorkspaceRecordCreator.handleUpdateExecute(createAction, userName);
+        } else if (action == 'bulk_update_preview') {
+            return AgentforceWorkspaceRecordCreator.handleBulkUpdatePreviewAction(createAction, userName);
         } else if (action == 'update_cancel') {
             return hasPendingBulkUpdate(conversationHistory)
                 ? AgentforceWorkspaceRecordCreator.handleBulkUpdateCancel(userName)
