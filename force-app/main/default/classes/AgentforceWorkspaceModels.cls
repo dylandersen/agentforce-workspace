@@ -111,10 +111,13 @@ public with sharing class AgentforceWorkspaceModels {
         @AuraEnabled public Boolean hasResults;
         @AuraEnabled public String intentLabel;
         @AuraEnabled public Integer reasoningAttempts;
+        /** User-facing labels for each failed attempt when the engine needed more than one try. */
+        @AuraEnabled public List<String> reasoningAttemptLabels;
         public QueryResult() {
             this.recordTabs = new List<RecordTab>();
             this.hasResults = false;
             this.reasoningAttempts = 0;
+            this.reasoningAttemptLabels = new List<String>();
         }
     }
 
@@ -135,6 +138,8 @@ public with sharing class AgentforceWorkspaceModels {
         public String failureExplanation;
         public List<String> alternativeSuggestions;
         public Integer attemptsUsed = 0;
+        /** Clean, user-facing label for each failed attempt (populated when attemptsUsed > 1). */
+        public List<String> attemptLabels;
     }
 
     /** Tab of records for a single object type in the list view. */
@@ -216,5 +221,6 @@ public with sharing class AgentforceWorkspaceModels {
         public String userName;
         public String userFullName;
         public Boolean hasAnyResults;
+        public Boolean hasDataCloudData = false;
     }
 }

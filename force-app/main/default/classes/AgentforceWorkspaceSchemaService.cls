@@ -76,6 +76,11 @@ public with sharing class AgentforceWorkspaceSchemaService {
         'Task', 'Event', 'Contract', 'Order', 'Incident', 'Problem', 'ChangeRequest'
     };
 
+    // ─── Platform Cache (persists across transactions, 1-hour TTL) ──
+    private static final String CACHE_PARTITION = 'local.AgentforceWorkspace';
+    private static final Integer CACHE_TTL = 3600;
+    private static final String CACHE_VER = 'v1';
+
     // ─── Transaction-Scoped Cache ──────────────────────────────────
 
     private static Map<String, Schema.SObjectType> cachedGlobalDescribe;
@@ -127,6 +132,12 @@ public with sharing class AgentforceWorkspaceSchemaService {
             return cachedMeta.get(objectApiName);
         }
 
+        ObjectMeta fromPlatformCache = getPlatformCachedMeta(objectApiName);
+        if (fromPlatformCache != null) {
+            cachedMeta.put(objectApiName, fromPlatformCache);
+            return fromPlatformCache;
+        }
+
         Map<String, Schema.SObjectType> gd = getGlobalDescribe();
         Schema.SObjectType sot = gd.get(objectApiName.toLowerCase());
         if (sot == null) return null;
@@ -136,6 +147,7 @@ public with sharing class AgentforceWorkspaceSchemaService {
 
         ObjectMeta meta = buildMeta(objectApiName, dsr);
         cachedMeta.put(objectApiName, meta);
+        putPlatformCachedMeta(objectApiName, meta);
         return meta;
     }
 
@@ -281,6 +293,9 @@ public with sharing class AgentforceWorkspaceSchemaService {
      * Used by BusinessIntelligence.buildSchemaContext() for the custom objects catalog.
      */
     public static List<ObjectMeta> listAccessibleCustomObjects(Integer maxCount) {
+        List<ObjectMeta> fromCache = getPlatformCachedObjList(maxCount);
+        if (fromCache != null) return fromCache;
+
         List<ObjectMeta> result = new List<ObjectMeta>();
         Map<String, Schema.SObjectType> gd = getGlobalDescribe();
 
@@ -309,7 +324,55 @@ public with sharing class AgentforceWorkspaceSchemaService {
                 count++;
             }
         }
+        putPlatformCachedObjList(maxCount, result);
         return result;
+    }
+
+    // ─── Platform Cache Helpers ────────────────────────────────────
+    // All cache operations are wrapped in try/catch — if the partition
+    // is not provisioned or has no allocation, we silently fall back
+    // to live describes (same behavior as before caching was added).
+
+    private static Cache.OrgPartition getOrgPartition() {
+        try {
+            return Cache.Org.getPartition(CACHE_PARTITION);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static ObjectMeta getPlatformCachedMeta(String objectApiName) {
+        Cache.OrgPartition p = getOrgPartition();
+        if (p == null) return null;
+        try {
+            String data = (String) p.get(CACHE_VER + '_obj_' + objectApiName.toLowerCase());
+            return data != null ? (ObjectMeta) JSON.deserialize(data, ObjectMeta.class) : null;
+        } catch (Exception e) { return null; }
+    }
+
+    private static void putPlatformCachedMeta(String objectApiName, ObjectMeta meta) {
+        Cache.OrgPartition p = getOrgPartition();
+        if (p == null) return;
+        try {
+            p.put(CACHE_VER + '_obj_' + objectApiName.toLowerCase(), JSON.serialize(meta), CACHE_TTL);
+        } catch (Exception e) { /* non-critical */ }
+    }
+
+    private static List<ObjectMeta> getPlatformCachedObjList(Integer maxCount) {
+        Cache.OrgPartition p = getOrgPartition();
+        if (p == null) return null;
+        try {
+            String data = (String) p.get(CACHE_VER + '_list_' + maxCount);
+            return data != null ? (List<ObjectMeta>) JSON.deserialize(data, List<ObjectMeta>.class) : null;
+        } catch (Exception e) { return null; }
+    }
+
+    private static void putPlatformCachedObjList(Integer maxCount, List<ObjectMeta> items) {
+        Cache.OrgPartition p = getOrgPartition();
+        if (p == null) return;
+        try {
+            p.put(CACHE_VER + '_list_' + maxCount, JSON.serialize(items), CACHE_TTL);
+        } catch (Exception e) { /* non-critical */ }
     }
 
     // ─── Internal Helpers ──────────────────────────────────────────

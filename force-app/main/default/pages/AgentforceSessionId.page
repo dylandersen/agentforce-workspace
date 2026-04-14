@@ -1,0 +1,12 @@
+<!-- Outputs an API-capable session ID for use in same-org Metadata API SOAP callouts.
+     UserInfo.getSessionId() in Lightning Experience returns a UI-scoped session that is
+     deliberately blocked from REST/SOAP API calls. The $Api.Session_Id merge field in
+     a Visualforce page produces a session ID that IS valid for API use.
+     Usage: Page.AgentforceSessionId.getContent().toString().trim() -->
+<apex:page
+    showHeader="false"
+    sidebar="false"
+    applyHtmlTag="false"
+    applyBodyTag="false"
+    contentType="text/plain"
+>{!$Api.Session_Id}</apex:page>

@@ -382,6 +382,74 @@ public with sharing class AgentforceWorkspaceRecordCreator {
         return result;
     }
 
+    /**
+     * Invoked when the LLM emits {"action":"bulk_update_preview",...} for a set of
+     * context record IDs that need user confirmation before changes are applied.
+     * Queries the records, builds the preview HTML, and sets pendingBulkUpdate
+     * so the next user turn can confirm or cancel.
+     */
+    public static AgentforceWorkspaceModels.ChatResult handleBulkUpdatePreviewAction(
+            Map<String, Object> actionResult, String userName) {
+        AgentforceWorkspaceModels.ChatResult errorResult = new AgentforceWorkspaceModels.ChatResult();
+
+        String objectApiName = actionResult.get('objectApiName') != null
+            ? String.valueOf(actionResult.get('objectApiName')) : null;
+
+        List<String> recordIds = new List<String>();
+        String idError = normalizeStringList(actionResult.get('recordIds'), recordIds);
+        if (idError != null) {
+            errorResult.response = '<p>' + idError + '</p>';
+            return errorResult;
+        }
+
+        Map<String, String> fields = new Map<String, String>();
+        String fieldError = normalizeStringMap(actionResult.get('fields'), fields);
+        if (fieldError != null) {
+            errorResult.response = '<p>' + fieldError + '</p>';
+            return errorResult;
+        }
+
+        if (String.isBlank(objectApiName) || recordIds.isEmpty() || fields.isEmpty()) {
+            errorResult.response = '<p>I need an object type, record IDs, and field values to preview a bulk update.</p>';
+            return errorResult;
+        }
+
+        List<String> safeIds = new List<String>();
+        for (String rid : recordIds) {
+            if (isRecordId(rid)) safeIds.add(rid);
+        }
+        if (safeIds.isEmpty()) {
+            errorResult.response = '<p>No valid record IDs found for the bulk update preview.</p>';
+            return errorResult;
+        }
+
+        Schema.SObjectType sObjType = Schema.getGlobalDescribe().get(objectApiName);
+        if (sObjType == null) {
+            errorResult.response = '<p>Unknown object type: ' + objectApiName + '</p>';
+            return errorResult;
+        }
+
+        // Pick the right name field for the object
+        String nameSelect = 'Name';
+        if (objectApiName == 'Task' || objectApiName == 'Event') {
+            nameSelect = 'Subject';
+        } else if (objectApiName == 'Case') {
+            nameSelect = 'CaseNumber, Subject';
+        }
+
+        try {
+            String escapedIds = '\'' + String.join(safeIds, '\',\'') + '\'';
+            String soql = 'SELECT Id, ' + nameSelect + ' FROM ' + objectApiName
+                + ' WHERE Id IN (' + escapedIds + ') WITH USER_MODE LIMIT 200';
+            List<SObject> records = Database.query(soql);
+            return buildBulkUpdatePreview(objectApiName, records, fields, userName);
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'handleBulkUpdatePreviewAction error: ' + e.getMessage());
+            errorResult.response = '<p>Something went wrong preparing the bulk update preview: ' + e.getMessage() + '</p>';
+            return errorResult;
+        }
+    }
+
     /** Build a pending bulk-update payload and confirmation preview. */
     public static AgentforceWorkspaceModels.ChatResult buildBulkUpdatePreview(
             String objectApiName,

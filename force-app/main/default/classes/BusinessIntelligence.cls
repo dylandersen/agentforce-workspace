@@ -421,6 +421,24 @@ global with sharing class BusinessIntelligence {
       }
     }
 
+    // Label-based resolution: match natural language against custom object labels
+    // so "show me invoices" enriches Invoice__c even without the API name
+    if (String.isNotBlank(userMessage) && prioritizedCustomObjects.size() < 5) {
+      String msgLower = userMessage.toLowerCase();
+      for (String objName : customObjByLower.values()) {
+        if (prioritizedCustomObjects.size() >= 5) break;
+        if (prioritizedCustomObjects.contains(objName)) continue;
+        Schema.DescribeSObjectResult dsr = globalDescribe.get(objName.toLowerCase()).getDescribe();
+        if (!dsr.isQueryable() || !dsr.isAccessible()) continue;
+        String lbl = dsr.getLabel();
+        String plr = dsr.getLabelPlural();
+        if ((String.isNotBlank(lbl) && lbl.length() >= 4 && matchesWholeWord(msgLower, lbl.toLowerCase())) ||
+            (String.isNotBlank(plr) && plr.length() >= 4 && matchesWholeWord(msgLower, plr.toLowerCase()))) {
+          prioritizedCustomObjects.add(objName);
+        }
+      }
+    }
+
     // For prioritized objects, include FULL field-level context via SchemaService
     for (String objName : prioritizedCustomObjects) {
       String richContext = AgentforceWorkspaceSchemaService.buildCustomObjectSchemaContext(objName);
@@ -558,7 +576,10 @@ global with sharing class BusinessIntelligence {
           continue;
         }
 
-        // Fix: OR with semi-join sub-selects — split into two valid queries
+        // Semi-join + OR: Salesforce forbids OR between two IN (SELECT...) clauses.
+        // If detected, try to split into two separate queries. If the split fails,
+        // fall through and let the database engine validate — the OR may be between
+        // simple conditions (e.g., a null check) which is perfectly valid SOQL.
         if (hasOrWithSubquery(upperSoql)) {
           List<String> splitQueries = splitOrWithSubquery(soql);
           if (!splitQueries.isEmpty()) {
@@ -570,8 +591,8 @@ global with sharing class BusinessIntelligence {
             }
             continue;
           }
-          System.debug(LoggingLevel.WARN, 'Could not split OR+subquery, rejecting: ' + soql);
-          continue;
+          // Split failed — don't reject. Let the database engine decide validity.
+          System.debug(LoggingLevel.INFO, 'OR+subquery detected but split failed — passing through to database: ' + soql);
         }
 
         // Check if this is an aggregate query without GROUP BY
@@ -689,17 +710,77 @@ global with sharing class BusinessIntelligence {
   }
 
   /**
-   * Check if SOQL uses OR with subquery (invalid — SOQL forbids semi-join sub-selects with OR)
+   * Check if SOQL uses OR *between two semi-join subselects* — SOQL forbids this.
+   * Example of INVALID: ... Id IN (SELECT ...) OR Name IN (SELECT ...)
+   * Example of VALID:   ... Id IN (SELECT ...) AND (Status = 'A' OR Status = 'B')
+   *
+   * Previous implementation was overly broad: any co-occurrence of IN (SELECT)
+   * and OR anywhere in the string triggered rejection. This caused false positives
+   * on common patterns like null-check ORs alongside subqueries.
+   *
+   * New approach: locate each semi-join block, then check whether the text
+   * between two blocks contains a bare OR (not inside parentheses).
    */
   @TestVisible
   private static Boolean hasOrWithSubquery(String upperSoql) {
-    // Match: OR ... IN (SELECT or IN (SELECT ...) ... OR
     if (!upperSoql.contains(' OR ') || !upperSoql.contains(' IN (SELECT')) {
       return false;
     }
-    // More precise: look for OR followed by IN (SELECT or IN (SELECT followed by OR
-    return Pattern.compile('\\bOR\\b.*\\bIN\\s*\\(\\s*SELECT').matcher(upperSoql).find()
-      || Pattern.compile('\\bIN\\s*\\(\\s*SELECT.*\\bOR\\b').matcher(upperSoql).find();
+
+    // Find the start positions of all semi-join expressions: IN (SELECT or NOT IN (SELECT
+    List<Integer> semiJoinStarts = new List<Integer>();
+    Integer searchFrom = 0;
+    while (searchFrom < upperSoql.length()) {
+      Integer idx = upperSoql.indexOf(' IN (SELECT', searchFrom);
+      if (idx < 0) break;
+      semiJoinStarts.add(idx);
+      searchFrom = idx + 11;
+    }
+
+    // Need at least 2 semi-joins for the invalid pattern
+    if (semiJoinStarts.size() < 2) return false;
+
+    // For each consecutive pair of semi-joins, check if OR connects them
+    for (Integer i = 0; i < semiJoinStarts.size() - 1; i++) {
+      Integer firstStart = semiJoinStarts[i];
+      // Find the close of the first subquery's parentheses
+      Integer openParen = upperSoql.indexOf('(', firstStart + 4);
+      if (openParen < 0) continue;
+      Integer closeParen = findMatchingCloseParen(upperSoql, openParen);
+      if (closeParen < 0) continue;
+
+      // Text between end of first subquery and start of next semi-join
+      Integer nextStart = semiJoinStarts[i + 1];
+      if (closeParen >= nextStart) continue;
+      String between = upperSoql.substring(closeParen + 1, nextStart).trim();
+
+      // Check for bare OR at the top level (not nested in parens)
+      if (containsBareOr(between)) return true;
+    }
+
+    return false;
+  }
+
+  /** Check if a string fragment contains a bare OR keyword not nested inside parentheses. */
+  private static Boolean containsBareOr(String fragment) {
+    Integer depth = 0;
+    String upper = fragment.toUpperCase();
+    for (Integer i = 0; i < upper.length(); i++) {
+      String ch = upper.substring(i, i + 1);
+      if (ch == '(') { depth++; continue; }
+      if (ch == ')') { depth--; continue; }
+      if (depth == 0 && i + 4 <= upper.length()) {
+        // Check for word-bounded OR
+        String slice = upper.substring(i, Math.min(i + 4, upper.length()));
+        if (slice.startsWith('OR ') || slice.startsWith('OR)')) {
+          Boolean leftBound = (i == 0)
+            || upper.substring(i - 1, i) == ' '
+            || upper.substring(i - 1, i) == ')';
+          if (leftBound) return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**
@@ -776,6 +857,18 @@ global with sharing class BusinessIntelligence {
   global class BIResult {
     @InvocableVariable(label='Chart Data')
     global AnalyticsChartResult chartData;
+  }
+
+  /** Word-boundary match: returns true if `word` appears as a standalone token in `text`. */
+  @TestVisible
+  private static Boolean matchesWholeWord(String text, String word) {
+    if (String.isBlank(word) || word.length() < 4) return false;
+    String safe = word.replace('\\', '\\\\').replace('.', '\\.').replace('(', '\\(')
+                      .replace(')', '\\)').replace('[', '\\[').replace(']', '\\]')
+                      .replace('{', '\\{').replace('}', '\\}').replace('*', '\\*')
+                      .replace('+', '\\+').replace('?', '\\?').replace('^', '\\^')
+                      .replace('$', '\\$').replace('|', '\\|');
+    return Pattern.compile('\\b' + safe + '\\b').matcher(text).find();
   }
 
   @TestVisible

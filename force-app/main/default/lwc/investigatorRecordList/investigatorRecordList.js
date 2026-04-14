@@ -61,6 +61,13 @@ export default class InvestigatorRecordList extends NavigationMixin(
     }));
   }
 
+  /** Exposed so the parent modal can read which object tab is currently visible. */
+  @api
+  get activeTabObjectApiName() {
+    const tab = this._processedTabs[this._activeTabIndex] || this._processedTabs[0];
+    return tab ? tab.objectApiName : null;
+  }
+
   get activeTab() {
     if (this._processedTabs.length === 0) return null;
     const tab =
