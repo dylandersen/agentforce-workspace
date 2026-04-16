@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Grants access to the Albert LEX headless CRM app, tab, and page.</description>
+    <hasActivationRequired>false</hasActivationRequired>
+    <label>Albert LEX User</label>
+    <tabSettings>
+        <tab>Albert_LEX</tab>
+        <visibility>Visible</visibility>
+    </tabSettings>
+</PermissionSet>
