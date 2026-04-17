@@ -21,12 +21,15 @@ Decisions already made for this project. Apply these on every UI change. When a 
 1. Sidebar operating-context footer (`.op-dot`)
 2. Home briefing line next to the greeting (`.pulse-dot`)
 3. Active Watch rows on Home (`.watch-row.is-active .watch-pulse`)
-4. Chat context line (`.ch-context .op-dot`)
-5. Active agent cards (`.ag-pulse`)
+4. Chat composer footnote (`.ch-footnote .op-dot-sm`)
+5. Active agent cards (`.ag-pulse` + `.ag-ambient` breathing glow)
+6. Skill detail "Called by" chips (`.caller-dot`)
 
 One element, used with intent. **Never introduce a second "alive" motif** — the pulse carries the identity.
 
-**"Operating context" microbar** — thin strip in the sidebar footer that always shows Albert's state: `Connected · Salesforce / 8 agents · 41 skills · ready`. Whisper-level instrumentation that makes the app feel live.
+**"Operating context" microbar** — thin strip in the sidebar footer that always shows Albert's state: `connected · salesforce · {N} agents · {M} skills`. Whisper-level instrumentation that makes the app feel live.
+
+**Live clock** in the top bar (`.clock`): `DAY · HH:MM · AM/PM`, mono, tabular-nums, ticks every 30s. Another whisper-level signal that this is a workspace, not a static page.
 
 ---
 
@@ -253,13 +256,17 @@ Never introduce a colored "accent" button. The solid ink-12 is the only strong C
 - Active: canvas background + `--shadow-xs` + weight 600.
 - Inactive: transparent + `--ink-9`.
 
-### Empty states (two patterns only)
+### Empty states — prefer *not* to show them
 
-**`.empty-tall`** — when the empty section is the main content of a column. Dashed border, inline suggestion list. Used on Home > Active Playbooks.
+**Removed as of the anti-slop pass.** Generic "Your X" empty-inline sections were deleted wholesale. A page with no user data should still show meaningful *built-in* content (templates, built-in agents, built-in skills, system-generated queue items). An empty state is a last resort — never a hero.
 
-**`.empty-inline`** — when the empty section is secondary. Dashed row with two tones of copy (`.dim`). Used on every "Your X" section (Your playbooks, Your agents, Your workflows, Scheduled work).
+If one is unavoidable, keep it to a single line of mono copy, aligned left, ink-8, no CTA button, no illustration.
 
-Never use: cartoon icon + title + paragraph + CTA button empty states.
+### Queue row (Home · "Waiting on you")
+Four-column grid: `64px | 1fr | auto | 14px` (eyebrow · title+meta · age · chev). Hover reveals a 2px emerald left rail. Used for actionable items Albert has queued for the human.
+
+### Caller chip (Skill detail · "Called by")
+Mono chip prefixed with an 8px pulse dot. Says "this skill is invoked by these agents right now." Reinforces the pulse signature at the skill-detail level.
 
 ### Mono chips
 
@@ -318,11 +325,23 @@ Three node variants: `.wf-node-trigger` (emerald-tinted), `.wf-node` (default ne
 
 ## Motion
 
+All animation belongs to one of six named patterns. Never introduce a new one without adding it here.
+
+| Keyframe       | Purpose                                           | Duration / timing                               |
+|----------------|---------------------------------------------------|-------------------------------------------------|
+| `pulse-ring`   | THE signature — 8px alive ring                    | 2.8s infinite, `ease-out`                       |
+| `reveal-up`    | Page-entry stagger (`.enter`, `.enter-stagger`)   | 420ms, `cubic-bezier(.2,.7,.2,1)`, `--i` offset |
+| `spark-draw`   | Sparkline SVG stroke draw-in on Home pulse cards  | 900ms, cubic ease, 160ms+80ms×i stagger         |
+| `caret-blink`  | Chat composer idle caret (only when empty)        | 1.1s infinite, `steps(2)`                       |
+| `wf-travel`    | Workflow edge dot travel (on card hover)          | 1.4s infinite, linear                           |
+| `ag-breathe`   | Active agent card ambient radial glow             | 4.8s infinite, `ease-in-out`                    |
+
+**Rules:**
 - Transitions: 100–120ms, `ease`.
 - Hover lifts: `translateY(-1px)` on cards only.
-- Pulse: 2.8s infinite.
 - No spring / bounce / elastic easings.
-- Everything respects `prefers-reduced-motion: reduce`.
+- Stagger offset pattern: `calc(var(--i, 0) * 40ms + 80ms)`.
+- **Everything respects `prefers-reduced-motion: reduce`** — all six animations are explicitly disabled in that media query block.
 
 ---
 

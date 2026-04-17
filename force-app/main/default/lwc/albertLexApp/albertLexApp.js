@@ -96,6 +96,32 @@ const WATCHING_ITEMS = [
   }
 ];
 
+/* Things waiting on the human's judgment — replaces any "0 items" empty state.
+   The whole product premise: Albert works, you review. This is that list. */
+const WAITING_ON_YOU = [
+  {
+    id: "q1",
+    eyebrow: "Draft",
+    title: "Renewal email — Contoso economic buyer",
+    meta: "writer · 11m ago",
+    age: "11m"
+  },
+  {
+    id: "q2",
+    eyebrow: "Risk",
+    title: "Octane — Series B stalled 9 days, champion silent",
+    meta: "analyst · 38m ago",
+    age: "38m"
+  },
+  {
+    id: "q3",
+    eyebrow: "Brief",
+    title: "10:30 meeting with Acme — pre-read ready",
+    meta: "researcher · 1h ago",
+    age: "1h"
+  }
+];
+
 /* Recent agent activity — the "what's been running" feed */
 const ACTIVITY_FEED = [
   { id: "a1", time: "09:12", agent: "analyst",  title: "Pipeline review completed",         status: "ok",  detail: "12 opportunities · 2 flagged" },
@@ -104,14 +130,6 @@ const ACTIVITY_FEED = [
   { id: "a4", time: "Yest.", agent: "writer",   title: "Drafted 2 follow-ups",              status: "review", detail: "waiting on your review" },
   { id: "a5", time: "Yest.", agent: "researcher", title: "Research on 4 new accounts",      status: "ok",  detail: "added to CRM with sources" },
   { id: "a6", time: "Yest.", agent: "sdr",      title: "Logged 11 calls to Salesforce",     status: "ok",  detail: "auto-enriched with next steps" }
-];
-
-const LEARNING_STATS = [
-  { key: "playbooks",   label: "Playbooks",   value: 0  },
-  { key: "workflows",   label: "Workflows",   value: 0  },
-  { key: "automations", label: "Automations", value: 0  },
-  { key: "skills",      label: "Skills",      value: 41 },
-  { key: "patterns",    label: "Patterns",    value: 8  }
 ];
 
 /* ─────────────────────────────────────────────────────────
@@ -223,15 +241,9 @@ const PLAYBOOK_TEMPLATES = [
 ];
 
 /* ─────────────────────────────────────────────────────────
-   Autonomous Work — delegation templates + timeline
+   Autonomous Work — delegation templates
+   (Dropped the 4-way zero-summary; the delegations below are the content.)
    ───────────────────────────────────────────────────────── */
-const AUTONOMOUS_SUMMARY = [
-  { key: "active",    label: "Active",    value: 0 },
-  { key: "scheduled", label: "Scheduled", value: 0 },
-  { key: "today",     label: "Today",     value: 0 },
-  { key: "month",     label: "This month", value: 0 }
-];
-
 const DELEGATION_TEMPLATES = [
   {
     id: "d-daily-pipe",
@@ -342,18 +354,19 @@ const WORKFLOW_PATTERNS = [
 ];
 
 /* ─────────────────────────────────────────────────────────
-   Agents — built-in roster
-   Monochrome initials, not colored icon tiles.
+   Agents — built-in roster.
+   No "model" field in the UI: that leaks vendor detail the user
+   shouldn't care about. Latency and active-state are enough.
    ───────────────────────────────────────────────────────── */
 const BUILTIN_AGENTS = [
-  { id: "researcher",            name: "researcher",            role: "Research",  description: "Searches the web and knowledge bases to find information.",   tools: ["web_search", "knowledge", "scrape"],          model: "gpt-4.1-mini",  latency: "fast",   active: true },
-  { id: "analyst",               name: "analyst",               role: "Analysis",  description: "Analyzes data and generates insights from structured information.", tools: ["knowledge", "code", "files"],            model: "gpt-4.1",       latency: "medium", active: true },
-  { id: "writer",                name: "writer",                role: "Drafting",  description: "Creates and edits written content — emails, docs, reports.",  tools: ["web_search", "files"],                        model: "gpt-4.1",       latency: "medium", active: false },
-  { id: "reviewer",              name: "reviewer",              role: "QA",        description: "Reviews documents, code, and content for quality and correctness.", tools: ["files", "knowledge", "code"],             model: "gpt-4.1-mini",  latency: "fast",   active: false },
-  { id: "developer",             name: "developer",             role: "Engineering", description: "Writes, debugs, and runs code across languages.",             tools: ["files", "code", "web_search"],              model: "gpt-4.1",       latency: "medium", active: false },
-  { id: "document",              name: "document",              role: "Documents", description: "Processes, parses, and extracts information from documents.",  tools: ["files", "knowledge", "doc_parser"],           model: "gpt-4.1-mini",  latency: "fast",   active: false },
-  { id: "sdr",                   name: "sdr",                   role: "Sales dev", description: "Prospect research, outreach, and CRM updates.",                tools: ["web_search", "salesforce", "email"],         model: "gpt-4.1",       latency: "medium", active: true  },
-  { id: "salesforce_specialist", name: "salesforce_specialist", role: "Platform",  description: "SOQL, record management, and automation across Salesforce.",   tools: ["salesforce", "knowledge"],                    model: "gpt-4.1",       latency: "medium", active: false }
+  { id: "researcher",            name: "researcher",            role: "Research",    description: "Searches the web and knowledge bases to find information.",            tools: ["web_search", "knowledge", "scrape"],   latency: "fast",   active: true  },
+  { id: "analyst",               name: "analyst",               role: "Analysis",    description: "Analyzes data and generates insights from structured information.",    tools: ["knowledge", "code", "files"],          latency: "medium", active: true  },
+  { id: "writer",                name: "writer",                role: "Drafting",    description: "Creates and edits written content — emails, docs, reports.",           tools: ["web_search", "files"],                 latency: "medium", active: false },
+  { id: "reviewer",              name: "reviewer",              role: "QA",          description: "Reviews documents, code, and content for quality and correctness.",    tools: ["files", "knowledge", "code"],          latency: "fast",   active: false },
+  { id: "developer",             name: "developer",             role: "Engineering", description: "Writes, debugs, and runs code across languages.",                      tools: ["files", "code", "web_search"],         latency: "medium", active: false },
+  { id: "document",              name: "document",              role: "Documents",   description: "Processes, parses, and extracts information from documents.",          tools: ["files", "knowledge", "doc_parser"],    latency: "fast",   active: false },
+  { id: "sdr",                   name: "sdr",                   role: "Sales dev",   description: "Prospect research, outreach, and CRM updates.",                        tools: ["web_search", "salesforce", "email"],   latency: "medium", active: true  },
+  { id: "salesforce_specialist", name: "salesforce_specialist", role: "Platform",    description: "SOQL, record management, and automation across Salesforce.",           tools: ["salesforce", "knowledge"],             latency: "medium", active: false }
 ];
 
 /* ─────────────────────────────────────────────────────────
@@ -413,6 +426,17 @@ const BUILTIN_SKILLS = [
   { id: "roi_calc",          name: "ROI Calculator",              category: "research", description: "Build ROI models for prospects using their business metrics and your product impact data.",                              triggers: ["calculate ROI for X"], uses: 24 }
 ];
 
+/* Skills → callers derivation. Keeps the 41-entry SKILLS array clean
+   while the detail panel shows which agents invoke each skill. */
+const SKILL_CALLERS_BY_CATEGORY = {
+  pipeline: ["analyst", "sdr"],
+  customer: ["researcher", "writer", "analyst"],
+  sales:    ["sdr", "writer", "researcher"],
+  research: ["researcher", "analyst"],
+  ops:      ["salesforce_specialist", "analyst"],
+  content:  ["writer", "reviewer"]
+};
+
 /* ─────────────────────────────────────────────────────────
    Utility
    ───────────────────────────────────────────────────────── */
@@ -440,24 +464,68 @@ function sparklinePath(values, width = 64, height = 18) {
     .join(" ");
 }
 
+/* Returns a deterministic sparkline total length so we can compute
+   a stroke-dasharray for a draw-in animation. Approximates by segment. */
+function sparklineLength(values, width = 64, height = 18) {
+  if (!values || values.length < 2) return 0;
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const range = max - min || 1;
+  const step = width / (values.length - 1);
+  let total = 0;
+  for (let i = 1; i < values.length; i++) {
+    const dx = step;
+    const dy = ((values[i] - min) / range) * height - ((values[i - 1] - min) / range) * height;
+    total += Math.hypot(dx, dy);
+  }
+  return Math.ceil(total);
+}
+
+function formatClockTime(date) {
+  const h = date.getHours();
+  const m = date.getMinutes();
+  const hh = String(((h + 11) % 12) + 1).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function formatClockMeridiem(date) {
+  return date.getHours() >= 12 ? "PM" : "AM";
+}
+
+function formatClockDay(date) {
+  return date.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase();
+}
+
 /* ─────────────────────────────────────────────────────────
    Component
    ───────────────────────────────────────────────────────── */
 export default class AlbertLexApp extends LightningElement {
   /* state */
-  @track activePage      = "home";
-  @track sidebarChatQuery = "";
-  @track expandedSkillId = null;
-  @track selectedSkillId = "pipeline_review";
-  @track skillFilter     = "all";
-  @track skillSearch     = "";
-  @track quickLaunch     = "";
-  @track chatInput       = "";
-  @track chatMode        = "ask";
-  @track globalCommand   = "";
+  activePage      = "home";
+  selectedSkillId = "pipeline_review";
+  skillFilter     = "all";
+  skillSearch     = "";
+  quickLaunch     = "";
+  chatInput       = "";
+  chatMode        = "ask";
+  globalCommand   = "";
+
+  @track _now      = new Date();
+  _clockIntervalId = null;
 
   connectedCallback() {
-    /* nothing async yet; reserved for future LDS wire */
+    // Live clock: we show a quiet HH:MM · MERIDIEM · DAY in the top bar.
+    // Signals that this workspace is live, without announcing it.
+    this._now = new Date();
+    this._clockIntervalId = setInterval(() => { this._now = new Date(); }, 30000);
+  }
+
+  disconnectedCallback() {
+    if (this._clockIntervalId) {
+      clearInterval(this._clockIntervalId);
+      this._clockIntervalId = null;
+    }
   }
 
   /* ───────── Nav ───────── */
@@ -492,35 +560,52 @@ export default class AlbertLexApp extends LightningElement {
   get isAgentsPage()      { return this.activePage === "agents"; }
   get isSkillsPage()      { return this.activePage === "skills"; }
 
+  /* ───────── Clock (top bar) ───────── */
+  get clockTime()     { return formatClockTime(this._now); }
+  get clockMeridiem() { return formatClockMeridiem(this._now); }
+  get clockDay()      { return formatClockDay(this._now); }
+
   /* ───────── Home ───────── */
-  get greeting()       { return greeting(); }
-  get userFirstName()  { return "Dylan"; }
-  get briefingLine()   { return BRIEFING_LINES[0]; }
+  get greeting()      { return greeting(); }
+  get userFirstName() { return "Dylan"; }
+  get briefingLine()  { return BRIEFING_LINES[0]; }
 
   get pulseMetrics() {
-    return PULSE_METRICS.map((m) => ({
-      ...m,
-      deltaClass: `pulse-delta pulse-delta-${m.deltaTone}`,
-      sparkPath: sparklinePath(m.sparkline)
-    }));
+    return PULSE_METRICS.map((m, i) => {
+      const pathData = sparklinePath(m.sparkline);
+      const length   = sparklineLength(m.sparkline);
+      return {
+        ...m,
+        deltaClass: `pulse-delta pulse-delta-${m.deltaTone}`,
+        sparkPath:  pathData,
+        sparkDraw:  `stroke-dasharray:${length};stroke-dashoffset:${length};animation:spark-draw 900ms ${i * 80 + 160}ms cubic-bezier(.2,.7,.2,1) forwards;`,
+        enterStyle: `--i:${i};`
+      };
+    });
   }
 
+  get waitingItems() {
+    return WAITING_ON_YOU.map((w, i) => ({ ...w, enterStyle: `--i:${i};` }));
+  }
+
+  get waitingCount() { return WAITING_ON_YOU.length; }
+
   get watchingItems() {
-    return WATCHING_ITEMS.map((w) => ({
+    return WATCHING_ITEMS.map((w, i) => ({
       ...w,
-      rowClass: `watch-row${w.active ? " is-active" : ""}`,
-      statusLabel: w.active ? "running" : "paused"
+      rowClass: `watch-row enter-stagger${w.active ? " is-active" : ""}`,
+      statusLabel: w.active ? "live" : "paused",
+      enterStyle: `--i:${i};`
     }));
   }
 
   get activityFeed() {
-    return ACTIVITY_FEED.map((a) => ({
+    return ACTIVITY_FEED.map((a, i) => ({
       ...a,
-      statusDotClass: `dot dot-${a.status}`
+      statusDotClass: `dot dot-${a.status}`,
+      enterStyle: `--i:${i};`
     }));
   }
-
-  get learningStats() { return LEARNING_STATS; }
 
   get activeAgentCount() {
     return BUILTIN_AGENTS.filter((a) => a.active).length;
@@ -549,8 +634,9 @@ export default class AlbertLexApp extends LightningElement {
 
   /* ───────── Playbooks ───────── */
   get playbookTemplates() {
-    return PLAYBOOK_TEMPLATES.map((p) => ({
+    return PLAYBOOK_TEMPLATES.map((p, idx) => ({
       ...p,
+      enterStyle: `--i:${idx};`,
       stepsView: p.steps.map((s, i) => ({
         key: `${p.id}-s-${i}`,
         sepKey: `${p.id}-sep-${i}`,
@@ -563,18 +649,19 @@ export default class AlbertLexApp extends LightningElement {
   get playbookTemplateCount() { return PLAYBOOK_TEMPLATES.length; }
 
   /* ───────── Autonomous Work ───────── */
-  get autonomousSummary() { return AUTONOMOUS_SUMMARY; }
   get delegationTemplates() {
-    return DELEGATION_TEMPLATES.map((d) => ({
+    return DELEGATION_TEMPLATES.map((d, i) => ({
       ...d,
+      enterStyle: `--i:${i};`,
       ownerInitial: d.owner.charAt(0).toUpperCase()
     }));
   }
 
   /* ───────── Workflows ───────── */
   get workflowPatterns() {
-    return WORKFLOW_PATTERNS.map((wf) => ({
+    return WORKFLOW_PATTERNS.map((wf, idx) => ({
       ...wf,
+      enterStyle: `--i:${idx};`,
       nodes: wf.steps.map((s, i) => ({
         key: `${wf.id}-n-${i}`,
         edgeKey: `${wf.id}-e-${i}`,
@@ -590,16 +677,16 @@ export default class AlbertLexApp extends LightningElement {
 
   /* ───────── Agents ───────── */
   get builtinAgents() {
-    return BUILTIN_AGENTS.map((a) => ({
+    return BUILTIN_AGENTS.map((a, i) => ({
       ...a,
       initial: a.name.charAt(0).toUpperCase(),
-      cardClass: `agent-card${a.active ? " is-active" : ""}`,
-      toolChips: a.tools.map((t, i) => ({ key: `${a.id}-t-${i}`, label: t }))
+      cardClass: `agent-card enter-stagger${a.active ? " is-active" : ""}`,
+      enterStyle: `--i:${i};`,
+      toolChips: a.tools.map((t, idx) => ({ key: `${a.id}-t-${idx}`, label: t }))
     }));
   }
 
   get builtinAgentCount() { return BUILTIN_AGENTS.length; }
-  get customAgentCount()  { return 0; }
 
   /* ───────── Skills ───────── */
   get skillCategories() {
@@ -619,9 +706,10 @@ export default class AlbertLexApp extends LightningElement {
         s.description.toLowerCase().includes(term) ||
         (s.triggers || []).some((t) => t.toLowerCase().includes(term))
       );
-    }).map((s) => ({
+    }).map((s, i) => ({
       ...s,
-      rowClass: `skill-row${s.id === this.selectedSkillId ? " is-selected" : ""}`
+      rowClass: `skill-row enter-stagger${s.id === this.selectedSkillId ? " is-selected" : ""}`,
+      enterStyle: `--i:${Math.min(i, 12)};`
     }));
   }
 
@@ -633,11 +721,14 @@ export default class AlbertLexApp extends LightningElement {
     const match = BUILTIN_SKILLS.find((s) => s.id === this.selectedSkillId);
     if (!match) return null;
     const triggers = match.triggers || [];
+    const callers  = SKILL_CALLERS_BY_CATEGORY[match.category] || [];
     return {
       ...match,
       triggerChips: triggers.map((t, i) => ({ key: `t-${i}`, label: t })),
       hasTriggers: triggers.length > 0,
       triggerCount: triggers.length,
+      callerChips: callers.map((c, i) => ({ key: `c-${i}`, label: c })),
+      callerCount: callers.length,
       categoryLabel: (SKILL_CATEGORIES.find((c) => c.id === match.category) || { label: "Skill" }).label
     };
   }
@@ -648,13 +739,6 @@ export default class AlbertLexApp extends LightningElement {
   handleNavClick(event) {
     const navId = event.currentTarget.dataset.nav;
     if (navId) this.activePage = navId;
-  }
-
-  handleGoToChat() { this.activePage = "chat"; }
-  handleGoToPlaybooks() { this.activePage = "playbooks"; }
-
-  handleSidebarChatSearch(event) {
-    this.sidebarChatQuery = event.target.value;
   }
 
   handleQuickLaunch(event) {

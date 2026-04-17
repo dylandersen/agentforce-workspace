@@ -3,7 +3,9 @@
 
     <!-- ═══════════════════════════════════════════════════════
          SIDEBAR
-         Same hue as canvas + one border. Brand is quiet.
+         Same hue as canvas, one border. Brand is quiet.
+         "New session" removed in favor of ⌘K top bar — one way in.
+         "Recent" placeholder group removed — no empty shouting.
          ═══════════════════════════════════════════════════════ -->
     <aside class="sidebar" aria-label="Primary">
       <div class="brand">
@@ -16,12 +18,6 @@
         </div>
       </div>
 
-      <button type="button" class="sidebar-new" onclick={handleGoToChat}>
-        <lightning-icon icon-name="utility:new" size="xx-small" alternative-text=""></lightning-icon>
-        <span>New session</span>
-        <span class="kbd-hint">N</span>
-      </button>
-
       <nav class="nav">
         <div class="nav-group">
           <template for:each={primaryNav} for:item="item">
@@ -33,6 +29,7 @@
               aria-current={item.ariaCurrent}
               onclick={handleNavClick}
             >
+              <span class="nav-rail" aria-hidden="true"></span>
               <lightning-icon icon-name={item.icon} size="xx-small" alternative-text=""></lightning-icon>
               <span class="nav-label">{item.label}</span>
             </button>
@@ -50,17 +47,11 @@
               aria-current={item.ariaCurrent}
               onclick={handleNavClick}
             >
+              <span class="nav-rail" aria-hidden="true"></span>
               <lightning-icon icon-name={item.icon} size="xx-small" alternative-text=""></lightning-icon>
               <span class="nav-label">{item.label}</span>
             </button>
           </template>
-        </div>
-
-        <div class="nav-group">
-          <div class="nav-heading">Recent</div>
-          <div class="recent-empty">
-            <span>No recent sessions</span>
-          </div>
         </div>
       </nav>
 
@@ -69,7 +60,7 @@
           <span class="op-dot" aria-hidden="true"></span>
           <div class="op-text">
             <span class="op-line-1">Connected · Salesforce</span>
-            <span class="op-line-2">8 agents · 41 skills · ready</span>
+            <span class="op-line-2">{builtinAgentCount} agents · {skillsTotalCount} skills · ready</span>
           </div>
         </div>
       </div>
@@ -80,7 +71,7 @@
          ═══════════════════════════════════════════════════════ -->
     <div class="main">
 
-      <!-- Top header: breadcrumb + command spine + identity -->
+      <!-- Top header: breadcrumb · command spine · live clock · identity -->
       <header class="top">
         <div class="crumbs">
           <span class="crumb-root">Albert LEX</span>
@@ -93,7 +84,7 @@
           <input
             type="text"
             class="command-input"
-            placeholder="Ask Albert anything, or describe a goal…"
+            placeholder="Ask Albert, describe a goal, or jump to a skill…"
             value={globalCommand}
             oninput={handleGlobalCommand}
             onkeydown={handleGlobalCommandSubmit}
@@ -104,6 +95,11 @@
         </div>
 
         <div class="top-actions">
+          <div class="clock" aria-hidden="true">
+            <span class="clock-day">{clockDay}</span>
+            <span class="clock-time">{clockTime}</span>
+            <span class="clock-meridiem">{clockMeridiem}</span>
+          </div>
           <button type="button" class="icon-btn" title="Notifications">
             <lightning-icon icon-name="utility:notification" size="xx-small" alternative-text="Notifications"></lightning-icon>
           </button>
@@ -120,11 +116,11 @@
           <section class="hp">
 
             <!-- Briefing -->
-            <div class="hp-briefing">
+            <div class="hp-briefing enter">
               <h1 class="hp-hello">{greeting}, <span class="hp-hello-name">{userFirstName}</span>.</h1>
               <p class="hp-sub">
                 <span class="pulse-dot" aria-hidden="true"></span>
-                {briefingLine}
+                <span>{briefingLine}</span>
               </p>
             </div>
 
@@ -132,12 +128,12 @@
             <div class="hp-section">
               <div class="hp-section-head">
                 <div class="hp-section-title">Today's pulse</div>
-                <div class="hp-section-meta">as of 09:14 AM</div>
+                <div class="hp-section-meta">updated {clockTime}</div>
               </div>
 
               <div class="pulse-grid">
                 <template for:each={pulseMetrics} for:item="m">
-                  <article key={m.id} class="pulse-card">
+                  <article key={m.id} class="pulse-card enter-stagger" style={m.enterStyle}>
                     <div class="pulse-label">{m.label}</div>
                     <div class="pulse-value">{m.value}</div>
                     <div class="pulse-foot">
@@ -145,56 +141,46 @@
                       <span class="pulse-sub">{m.sub}</span>
                     </div>
                     <svg class="pulse-spark" viewBox="0 0 64 18" preserveAspectRatio="none" aria-hidden="true">
-                      <path d={m.sparkPath}></path>
+                      <path d={m.sparkPath} style={m.sparkDraw}></path>
                     </svg>
                   </article>
                 </template>
               </div>
             </div>
 
-            <!-- Two-column: Playbooks + Watching -->
+            <!-- Two-column: Waiting on you · Watching -->
             <div class="hp-columns">
 
               <div class="hp-col">
                 <div class="hp-section-head">
-                  <div class="hp-section-title">Active playbooks</div>
-                  <button type="button" class="link-btn" onclick={handleGoToPlaybooks}>
-                    Browse templates
-                    <lightning-icon icon-name="utility:arrowright" size="xx-small" alternative-text=""></lightning-icon>
-                  </button>
+                  <div class="hp-section-title">Waiting on you</div>
+                  <span class="tag-count">{waitingCount}</span>
                 </div>
 
-                <div class="empty-tall">
-                  <div class="empty-eyebrow">No active playbooks</div>
-                  <p class="empty-copy">
-                    Start from a template or describe what you want done.
-                  </p>
-                  <div class="empty-suggestions">
-                    <button type="button" class="suggestion" onclick={handleGoToPlaybooks}>
-                      <span class="sug-name">Weekly pipeline review</span>
-                      <span class="sug-meta">4 steps · ~4 min</span>
-                    </button>
-                    <button type="button" class="suggestion" onclick={handleGoToPlaybooks}>
-                      <span class="sug-name">QBR preparation</span>
-                      <span class="sug-meta">5 steps · ~8 min</span>
-                    </button>
-                    <button type="button" class="suggestion" onclick={handleGoToPlaybooks}>
-                      <span class="sug-name">Renewal risk sweep</span>
-                      <span class="sug-meta">4 steps · continuous</span>
-                    </button>
-                  </div>
-                </div>
+                <ul class="queue-list">
+                  <template for:each={waitingItems} for:item="q">
+                    <li key={q.id} class="queue-row enter-stagger" style={q.enterStyle}>
+                      <div class="queue-eyebrow">{q.eyebrow}</div>
+                      <div class="queue-title">{q.title}</div>
+                      <div class="queue-meta">
+                        <span class="queue-agent">{q.meta}</span>
+                        <span class="queue-age">{q.age}</span>
+                      </div>
+                      <span class="queue-chev" aria-hidden="true">→</span>
+                    </li>
+                  </template>
+                </ul>
               </div>
 
               <div class="hp-col">
                 <div class="hp-section-head">
                   <div class="hp-section-title">What Albert's watching</div>
-                  <span class="tag-count">{activeAgentCount} active</span>
+                  <span class="tag-count">{activeAgentCount} live</span>
                 </div>
 
                 <ul class="watch-list">
                   <template for:each={watchingItems} for:item="w">
-                    <li key={w.id} class={w.rowClass}>
+                    <li key={w.id} class={w.rowClass} style={w.enterStyle}>
                       <span class="watch-pulse" aria-hidden="true"></span>
                       <div class="watch-body">
                         <div class="watch-title">{w.title}</div>
@@ -213,12 +199,14 @@
             <!-- Activity -->
             <div class="hp-section">
               <div class="hp-section-head">
-                <div class="hp-section-title">Automation activity</div>
-                <a class="link-btn" href="#">View all</a>
+                <div class="hp-section-title">Recent activity</div>
+                <a class="link-btn" href="#">All events
+                  <lightning-icon icon-name="utility:arrowright" size="xx-small" alternative-text=""></lightning-icon>
+                </a>
               </div>
               <ol class="feed">
                 <template for:each={activityFeed} for:item="a">
-                  <li key={a.id} class="feed-row">
+                  <li key={a.id} class="feed-row enter-stagger" style={a.enterStyle}>
                     <span class="feed-time">{a.time}</span>
                     <span class={a.statusDotClass} aria-hidden="true"></span>
                     <div class="feed-body">
@@ -234,32 +222,15 @@
               </ol>
             </div>
 
-            <!-- Learning -->
-            <div class="hp-section">
-              <div class="hp-section-head">
-                <div class="hp-section-title">Learning</div>
-                <div class="hp-section-meta">what Albert has learned about your work</div>
-              </div>
-              <div class="stats-strip">
-                <template for:each={learningStats} for:item="s">
-                  <div key={s.key} class="stat">
-                    <div class="stat-value">{s.value}</div>
-                    <div class="stat-label">{s.label}</div>
-                  </div>
-                </template>
-              </div>
-            </div>
-
           </section>
         </template>
 
         <!-- ═══════════════════════════════════════════════════
-             CHAT — composer-first layout, marketing minimized
+             CHAT — composer-first, marketing minimized
              ═══════════════════════════════════════════════════ -->
         <template lwc:if={isChatPage}>
           <section class="ch">
-            <div class="ch-stage">
-              <div class="ch-lead">Tell Albert what you need</div>
+            <div class="ch-stage enter">
 
               <div class="ch-composer is-hero">
                 <div class="ch-modes">
@@ -277,20 +248,23 @@
                   </template>
                 </div>
                 <div class="ch-input-row">
-                  <textarea
-                    class="ch-input"
-                    placeholder="Ask a question, describe a goal, or paste a thread. Albert has your pipeline, accounts, and the web."
-                    value={chatInput}
-                    oninput={handleChatInput}
-                    onkeydown={handleChatKeyDown}
-                  ></textarea>
+                  <div class="ch-input-wrap">
+                    <textarea
+                      class="ch-input"
+                      placeholder="Ask a question, describe a goal, or paste a thread."
+                      value={chatInput}
+                      oninput={handleChatInput}
+                      onkeydown={handleChatKeyDown}
+                    ></textarea>
+                    <span class="ch-caret" aria-hidden="true"></span>
+                  </div>
                   <button type="button" class={chatSendClass} aria-label="Send">
                     <lightning-icon icon-name="utility:send" size="xx-small" alternative-text="Send"></lightning-icon>
                   </button>
                 </div>
                 <div class="ch-footnote">
-                  <span>Context: 3 CRM objects · 8 agents · 41 skills</span>
-                  <span class="kbd-hint">Enter to send · Shift+Enter for newline</span>
+                  <span class="op-dot op-dot-sm" aria-hidden="true"></span>
+                  <span>{builtinAgentCount} agents · {skillsTotalCount} skills · CRM, web, and your calendar</span>
                 </div>
               </div>
 
@@ -334,12 +308,12 @@
              ═══════════════════════════════════════════════════ -->
         <template lwc:if={isPlaybooksPage}>
           <section class="pb">
-            <div class="pb-head">
+            <div class="pb-head enter">
               <h1 class="page-title">Playbooks</h1>
-              <p class="page-sub">Named, repeatable work. One-line description is all Albert needs to draft the rest.</p>
+              <p class="page-sub">Named, repeatable work. One line is all Albert needs to draft the rest.</p>
             </div>
 
-            <div class="quick-launch">
+            <div class="quick-launch enter">
               <div class="ql-label">Quick launch</div>
               <div class="ql-row">
                 <input
@@ -355,17 +329,16 @@
                   <lightning-icon icon-name="utility:arrowright" size="xx-small" alternative-text=""></lightning-icon>
                 </button>
               </div>
-              <div class="ql-hint">Albert will propose steps and agents. You approve before it runs.</div>
             </div>
 
             <div class="hp-section-head">
               <div class="hp-section-title">Template gallery</div>
-              <span class="tag-count">{playbookTemplateCount} templates</span>
+              <span class="tag-count">{playbookTemplateCount}</span>
             </div>
 
             <div class="pb-grid">
               <template for:each={playbookTemplates} for:item="p">
-                <article key={p.id} class="pb-card">
+                <article key={p.id} class="pb-card enter-stagger" style={p.enterStyle}>
                   <div class="pb-card-top">
                     <div class="pb-card-category">{p.category}</div>
                     <div class="pb-card-runtime">{p.runtime}</div>
@@ -396,15 +369,6 @@
               </template>
             </div>
 
-            <div class="hp-section-head">
-              <div class="hp-section-title">Your playbooks</div>
-              <span class="tag-count">0</span>
-            </div>
-            <div class="empty-inline">
-              <span>You haven't saved a playbook yet.</span>
-              <span class="dim">Use a template above or draft one with quick launch.</span>
-            </div>
-
           </section>
         </template>
 
@@ -413,18 +377,9 @@
              ═══════════════════════════════════════════════════ -->
         <template lwc:if={isAutomationsPage}>
           <section class="au">
-            <div class="pb-head">
+            <div class="pb-head enter">
               <h1 class="page-title">Autonomous work</h1>
               <p class="page-sub">Recurring, scheduled, or event-triggered work Albert handles without you.</p>
-            </div>
-
-            <div class="au-summary">
-              <template for:each={autonomousSummary} for:item="s">
-                <div key={s.key} class="au-stat">
-                  <div class="au-stat-value">{s.value}</div>
-                  <div class="au-stat-label">{s.label}</div>
-                </div>
-              </template>
             </div>
 
             <div class="hp-section-head">
@@ -434,7 +389,7 @@
 
             <div class="deleg-grid">
               <template for:each={delegationTemplates} for:item="d">
-                <article key={d.id} class="deleg-card">
+                <article key={d.id} class="deleg-card enter-stagger" style={d.enterStyle}>
                   <div class="deleg-head">
                     <div class="deleg-owner">
                       <span class="owner-avatar">{d.ownerInitial}</span>
@@ -455,15 +410,6 @@
               </template>
             </div>
 
-            <div class="hp-section-head">
-              <div class="hp-section-title">Scheduled work</div>
-              <span class="tag-count">0</span>
-            </div>
-            <div class="empty-inline">
-              <span>No scheduled work yet.</span>
-              <span class="dim">Configure a delegation template above, or describe a cadence.</span>
-            </div>
-
           </section>
         </template>
 
@@ -472,7 +418,7 @@
              ═══════════════════════════════════════════════════ -->
         <template lwc:if={isWorkflowsPage}>
           <section class="wf">
-            <div class="pb-head">
+            <div class="pb-head enter">
               <h1 class="page-title">Workflows</h1>
               <p class="page-sub">Deterministic, multi-step pipelines Albert can run end-to-end.</p>
             </div>
@@ -484,7 +430,7 @@
 
             <div class="wf-grid">
               <template for:each={workflowPatterns} for:item="wf">
-                <article key={wf.id} class="wf-card">
+                <article key={wf.id} class="wf-card enter-stagger" style={wf.enterStyle}>
                   <div class="wf-name">{wf.name}</div>
                   <div class="wf-desc">{wf.description}</div>
 
@@ -501,7 +447,9 @@
                           <span class="wf-node-dot" aria-hidden="true"></span>
                           <span class="wf-node-label">{n.label}</span>
                         </div>
-                        <div key={n.edgeKey} class="wf-edge" aria-hidden="true"></div>
+                        <div key={n.edgeKey} class="wf-edge" aria-hidden="true">
+                          <span class="wf-edge-travel" aria-hidden="true"></span>
+                        </div>
                       </template>
                     </template>
                   </div>
@@ -516,15 +464,6 @@
               </template>
             </div>
 
-            <div class="hp-section-head">
-              <div class="hp-section-title">Your workflows</div>
-              <span class="tag-count">0</span>
-            </div>
-            <div class="empty-inline">
-              <span>No custom workflows yet.</span>
-              <span class="dim">Start from a pattern or describe a sequence in chat.</span>
-            </div>
-
           </section>
         </template>
 
@@ -533,19 +472,20 @@
              ═══════════════════════════════════════════════════ -->
         <template lwc:if={isAgentsPage}>
           <section class="ag">
-            <div class="pb-head">
+            <div class="pb-head enter">
               <h1 class="page-title">Agents</h1>
-              <p class="page-sub">Specialists Albert coordinates. Each has its own tools, latency profile, and model.</p>
+              <p class="page-sub">Specialists Albert coordinates. Each has its own tools, latency profile, and current state.</p>
             </div>
 
             <div class="hp-section-head">
               <div class="hp-section-title">Built-in</div>
-              <span class="tag-count">{builtinAgentCount} · {activeAgentCount} active</span>
+              <span class="tag-count">{builtinAgentCount} · {activeAgentCount} live</span>
             </div>
 
             <div class="ag-grid">
               <template for:each={builtinAgents} for:item="a">
-                <article key={a.id} class={a.cardClass}>
+                <article key={a.id} class={a.cardClass} style={a.enterStyle}>
+                  <span class="ag-ambient" aria-hidden="true"></span>
                   <div class="ag-head">
                     <div class="ag-avatar" aria-hidden="true">{a.initial}</div>
                     <template lwc:if={a.active}>
@@ -563,27 +503,13 @@
                   </div>
 
                   <div class="ag-meta">
-                    <div class="ag-meta-item">
-                      <span class="ag-meta-label">Model</span>
-                      <span class="ag-meta-value">{a.model}</span>
-                    </div>
-                    <div class="ag-meta-item">
-                      <span class="ag-meta-label">Latency</span>
-                      <span class="ag-meta-value">{a.latency}</span>
-                    </div>
+                    <span class="ag-meta-label">Latency</span>
+                    <span class="ag-meta-value">{a.latency}</span>
                   </div>
                 </article>
               </template>
             </div>
 
-            <div class="hp-section-head">
-              <div class="hp-section-title">Your agents</div>
-              <span class="tag-count">{customAgentCount}</span>
-            </div>
-            <div class="empty-inline">
-              <span>You haven't built a custom agent yet.</span>
-              <span class="dim">Clone a built-in, or describe a role in chat.</span>
-            </div>
           </section>
         </template>
 
@@ -592,12 +518,12 @@
              ═══════════════════════════════════════════════════ -->
         <template lwc:if={isSkillsPage}>
           <section class="sk">
-            <div class="pb-head">
+            <div class="pb-head enter">
               <h1 class="page-title">Skills</h1>
-              <p class="page-sub">Composable capabilities any agent can call. Select one for triggers and internals.</p>
+              <p class="page-sub">Composable capabilities any agent can call. Select one for triggers and callers.</p>
             </div>
 
-            <div class="sk-toolbar">
+            <div class="sk-toolbar enter">
               <div class="sk-search">
                 <lightning-icon icon-name="utility:search" size="xx-small" alternative-text=""></lightning-icon>
                 <input
@@ -634,6 +560,7 @@
                       key={s.id}
                       class={s.rowClass}
                       data-skill-id={s.id}
+                      style={s.enterStyle}
                       onclick={handleSkillSelect}
                     >
                       <div class="sk-row-name">{s.name}</div>
@@ -649,7 +576,7 @@
               </div>
 
               <template lwc:if={selectedSkill}>
-                <aside class="sk-detail">
+                <aside class="sk-detail enter">
                   <div class="sk-detail-head">
                     <div class="sk-detail-eyebrow">{selectedSkill.categoryLabel}</div>
                     <h2 class="sk-detail-name">{selectedSkill.name}</h2>
@@ -666,7 +593,7 @@
                       <div class="sk-stat-label">Trigger phrases</div>
                     </div>
                     <div class="sk-stat">
-                      <div class="sk-stat-value">all</div>
+                      <div class="sk-stat-value">{selectedSkill.callerCount}</div>
                       <div class="sk-stat-label">Agents can call</div>
                     </div>
                   </div>
@@ -681,26 +608,20 @@
                       </div>
                     </template>
                     <template lwc:else>
-                      <div class="sk-triggers-empty">No explicit trigger phrases. Albert infers from context.</div>
+                      <div class="sk-triggers-empty">Inferred from context — no explicit triggers.</div>
                     </template>
                   </div>
 
                   <div class="sk-detail-block">
-                    <div class="sk-block-title">How it runs</div>
-                    <ol class="sk-runsteps">
-                      <li><span class="sk-step-num">01</span><span>Resolve intent and load required CRM context.</span></li>
-                      <li><span class="sk-step-num">02</span><span>Select the best agent and tools for the job.</span></li>
-                      <li><span class="sk-step-num">03</span><span>Execute — read, analyze, draft, or act.</span></li>
-                      <li><span class="sk-step-num">04</span><span>Return a typed response with sources and actions.</span></li>
-                    </ol>
-                  </div>
-
-                  <div class="sk-detail-foot">
-                    <span class="sk-foot-dim">Enabled for all users</span>
-                    <button type="button" class="btn-ghost">
-                      Configure
-                      <lightning-icon icon-name="utility:arrowright" size="xx-small" alternative-text=""></lightning-icon>
-                    </button>
+                    <div class="sk-block-title">Called by</div>
+                    <div class="sk-callers">
+                      <template for:each={selectedSkill.callerChips} for:item="c">
+                        <span key={c.key} class="caller-chip">
+                          <span class="caller-dot" aria-hidden="true"></span>
+                          {c.label}
+                        </span>
+                      </template>
+                    </div>
                   </div>
                 </aside>
               </template>
